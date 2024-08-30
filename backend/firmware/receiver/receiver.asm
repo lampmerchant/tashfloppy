@@ -71,7 +71,8 @@ UPGCR	equ	0x82	;GCR mode
 UPMFM	equ	0x83	;MFM mode
 UPSEL0	equ	0x84	;SEL falling edge
 UPSEL1	equ	0x85	;SEL rising edge
-UPDATA	equ	0x8D	;Enter data mode
+UPDATA0	equ	0x86	;Enter data mode on head 0
+UPDATA1	equ	0x87	;Enter data mode on head 1
 UPEJECT	equ	0x8E	;Eject disk
 
 
@@ -139,6 +140,7 @@ IntNWrreqRising
 	movlb	3		;Just in case, make sure UART isn't transmitting
 	btfss	TXSTA,TRMT	; because we're about to send a break
 	bra	$-1		; "
+	bsf	RCSTA,CREN	;Reenable the UART receiver
 	bsf	TXSTA,SENDB	;Send break character
 	clrf	TXREG		; "
 	movlb	31		;Clear out the stack and return to WaitCommand
@@ -155,15 +157,15 @@ IntNWrreqFalling
 	return			; this change
 	bsf	FLAGS,DATMODE	;Enter data mode
 	movlb	3		;Just in case, make sure UART isn't transmitting
-	btfss	TXSTA,TRMT	; because we're about to stuff two bytes into it
+	btfss	TXSTA,TRMT	; "
 	bra	$-1		; "
-	movlb	0		;Check and signal state of SEL pin to host
-	movlw	UPSEL0		; "
+	movlb	0		;Check and signal entry of data mode and state
+	movlw	UPDATA0		; of SEL pin to host
 	btfsc	SEL_PORT,SEL_PIN; "
-	movlw	UPSEL1		; "
+	movlw	UPDATA1		; "
 	movwf	INDF1		; "
-	movlw	UPDATA		;Signal entry of data mode to host
-	movwf	INDF1		; "
+	movlb	3		;Disable the UART receiver so it doesn't get
+	bcf	RCSTA,CREN	; wedged from remaining data from frontend
 	movlb	31		;Clear out the stack and 'return' to the
 	clrf	STKPTR		; receiver for GCR or MFM as appropriate
 	movlw	high GcrRecvFDD	; "
@@ -185,6 +187,7 @@ IntCa3
 	iorlw	B'11000000'	;Translate the command port read into a command
 	movlp	high PortToCmd	; "
 	callw			; "
+	movlp	0		; "
 	movlb	30		;Switch to CLC bank, common need among commands
 	brw			;CA2 CA1 CA0 SEL Effect
 	bra	IntCa3DirtnLow	;0   0   0   0   Set !DIRTN low
@@ -1874,6 +1877,7 @@ GFSDataBits2
 GcrRecvFDD
 	movlp	high GFSStart	;Point W to GCR floppy state machine
 	movlw	low GFSStart	; "
+	movlb	0		;Bank 0 so NWR_PORT is accessible
 GcrSt0	btfss	NWR_PORT,NWR_PIN;Signal starts at zero, wait until transition
 	bra	$-1		; to one, this is MSB (always 1) of first byte
 	callw			;003-012 cycles, 0.18-0.73 bit times
