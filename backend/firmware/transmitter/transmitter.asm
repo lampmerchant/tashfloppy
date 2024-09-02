@@ -285,8 +285,14 @@ Init
 	movlw	B'10000000'
 	movwf	CLC3CON
 
+	banksel	FVRCON		;Temperature sensor on so ADC can use it as part
+	movlw	B'00110000'	; of a pseudorandom number generator
+	movwf	FVRCON
+
 	banksel	ADCON0		;ADC on, right justified, temperature sensor
-	movlw	B'10100000'	; selected
+	movlw	B'11000000'	; selected, auto-start a conversion every time
+	movwf	ADCON2		; Timer4 matches
+	movlw	B'10100000'
 	movwf	ADCON1
 	movlw	B'01110101'
 	movwf	ADCON0
@@ -296,6 +302,12 @@ Init
 	movwf	T6CON
 	movlw	254
 	movwf	PR6
+
+	banksel	T4CON		;Timer4 ticks 1:1 with instruction clock, period
+	movlw	B'00000100'	; set so ADC reads once every 128 cycles
+	movwf	T4CON
+	movlw	127
+	movwf	PR4
 
 	banksel	IOCAP		;CA3 interrupts on rising edge, !WRREQ on either
 	bsf	CA3_IOCP,CA3_PIN
@@ -777,43 +789,46 @@ DMAGcr8	call	ServiceUart	;060-072 Service the UART
 
 DataModeRawGcr
 	call	SetupForGcr	;Setup for GCR
-DMRGcr0	call	ServiceUart	;034-046 Service the UART
-	call	GetQueueLength	;047-061 Set/clear CTS and check if queue empty
-	btfss	STATUS,Z	;062 If the queue is not empty, pop a byte off
-	moviw	FSR0++		;063  and advance and wrap the pointer, else act
-	bcf	FSR0H,0		;064  as though a zero was popped off the queue
-	movlb	1		;065 Start an ADC read going so we have random
-	bsf	ADCON0,ADGO	;066  data to seed the RNG with at end of this
-	lslf	WREG,W		;067 Shift MSb out of byte and into carry
-	movlb	8		;068 Switch bank so we can access Timer6
-	rlf	X0,F		;069 Rotate 1st bit into the SR followed by a 0
-	lslf	X0,F		;070  so SR is of the form x0x0x0x0, clear carry
-	btfsc	X0,3		;071 If second data bit in the SR is a 1, set
-	bsf	STATUS,C	;072  carry to rotate that bit into output byte
-	btfsc	STATUS,Z	;073 If the SR is all 0s, inject a pseudorandom
-	lsrf	TMR6,F		;074  bit by rotating LSb of Timer6 into carry
-	rlf	WREG,W		;075 Rotate bit into output
-	rlf	X0,F		;076 Rotate next bit into the SR followed by a 0
-	lslf	X0,F		;077  so SR is of the form x0x0x0x0, clear carry
-	btfsc	X0,3		;078 If second data bit in the SR is a 1, set
-	bsf	STATUS,C	;079  carry to rotate that bit into output byte
-	btfsc	STATUS,Z	;080 If the SR is all 0s, inject a pseudorandom
-	lsrf	TMR6,F		;081  bit by rotating LSb of Timer6 into carry
-	rlf	WREG,W		;082 Rotate bit into output
-	rlf	X0,F		;083 Rotate next bit into the SR followed by a 0
-	lslf	X0,F		;084  so SR is of the form x0x0x0x0, clear carry
-	btfsc	X0,3		;085 If second data bit in the SR is a 1, set
-	bsf	STATUS,C	;086  carry to rotate that bit into output byte
-	btfsc	STATUS,Z	;087 If the SR is all 0s, inject a pseudorandom
-	lsrf	TMR6,F		;088  bit by rotating LSb of Timer6 into carry
-	rlf	WREG,W		;089 Rotate bit into output
-	rlf	X0,F		;090 Rotate next bit into the SR followed by a 0
-	lslf	X0,F		;091  so SR is of the form x0x0x0x0, clear carry
-	btfsc	X0,3		;092 If second data bit in the SR is a 1, set
-	bsf	STATUS,C	;093  carry to rotate that bit into output byte
-	btfsc	STATUS,Z	;094 If the SR is all 0s, inject a pseudorandom
-	lsrf	TMR6,F		;095  bit by rotating LSb of Timer6 into carry
-	rlf	WREG,W		;096 Rotate bit into output
+	movlb	8		;Set up Timer4 so ADC auto-reads at the right
+	movlw	107		; time
+	movwf	TMR4		; "
+DMRGcr0	call	GetQueueLength	;034-048 Set/clear CTS and check if queue empty
+	btfss	STATUS,Z	;049 If the queue is not empty, pop a byte off
+	moviw	FSR0++		;050  and advance and wrap the pointer, else act
+	bcf	FSR0H,0		;051  as though a zero was popped off the queue
+	lslf	WREG,W		;052 Shift MSb out of byte and into carry
+	movlb	8		;053 Switch bank so we can access Timer6
+	rlf	X0,F		;054 Rotate 1st bit into the SR followed by a 0
+	lslf	X0,F		;055  so SR is of the form x0x0x0x0, clear carry
+	btfsc	X0,3		;056 If second data bit in the SR is a 1, set
+	bsf	STATUS,C	;057  carry to rotate that bit into output byte
+	btfsc	STATUS,Z	;058 If the SR is all 0s, inject a pseudorandom
+	lsrf	TMR6,F		;059  bit by rotating LSb of Timer6 into carry
+	rlf	WREG,W		;060 Rotate bit into output
+	rlf	X0,F		;061 Rotate next bit into the SR followed by a 0
+	lslf	X0,F		;062  so SR is of the form x0x0x0x0, clear carry
+	btfsc	X0,3		;063 If second data bit in the SR is a 1, set
+	bsf	STATUS,C	;064  carry to rotate that bit into output byte
+	btfsc	STATUS,Z	;065 If the SR is all 0s, inject a pseudorandom
+	lsrf	TMR6,F		;066  bit by rotating LSb of Timer6 into carry
+	rlf	WREG,W		;067 Rotate bit into output
+	rlf	X0,F		;068 Rotate next bit into the SR followed by a 0
+	lslf	X0,F		;069  so SR is of the form x0x0x0x0, clear carry
+	btfsc	X0,3		;070 If second data bit in the SR is a 1, set
+	bsf	STATUS,C	;071  carry to rotate that bit into output byte
+	btfsc	STATUS,Z	;072 If the SR is all 0s, inject a pseudorandom
+	lsrf	TMR6,F		;073  bit by rotating LSb of Timer6 into carry
+	rlf	WREG,W		;074 Rotate bit into output
+	rlf	X0,F		;075 Rotate next bit into the SR followed by a 0
+	lslf	X0,F		;076  so SR is of the form x0x0x0x0, clear carry
+	btfsc	X0,3		;077 If second data bit in the SR is a 1, set
+	bsf	STATUS,C	;078  carry to rotate that bit into output byte
+	btfsc	STATUS,Z	;079 If the SR is all 0s, inject a pseudorandom
+	lsrf	TMR6,F		;080  bit by rotating LSb of Timer6 into carry
+	movwf	X1		;081 Preserve W through call to service UART
+	call	ServiceUart	;082-094 Service the UART
+	movlb	8		;095 Switch bank so we can access Timer6
+	rlf	X1,W		;096 Rotate bit into output (C was preserved)
 	rlf	X0,F		;097 Rotate next bit into the SR followed by a 0
 	lslf	X0,F		;098  so SR is of the form x0x0x0x0, clear carry
 	btfsc	X0,3		;099 If second data bit in the SR is a 1, set
@@ -893,19 +908,19 @@ DMAMf02	btfsc	FLAGS,LASTLSB	;58 If LSb of last byte was set, clear the MSb
 	bcf	SSPCON1,SSPEN	;62  resetting the SSP to abort any transmission
 	bsf	SSPCON1,SSPEN	;63  in progress
 	movwf	SSP1BUF		;00  "
-	call	ServiceUart	;00-12 Service the UART
-	btfsc	FLAGS,MFMLIT	;13 If the byte is to be taken literally, skip
-	bra	DMAMf09		;14(-15)  ahead to skip the checks below
-	movf	X2,W		;15 Check if the byte is an 0xC2 or an 0xA1,
-	xorlw	0xC2		;16  these have to have a clock removed from
-	btfsc	STATUS,Z	;17  their lower MFM byte
-	bra	DMAMf10		;18(-19)  "
-	xorlw	0xA1 ^ 0xC2	;19  "
-	btfsc	STATUS,Z	;20  "
-	bra	DMAMf11		;21(-22)  "
-	call	ServiceUart	;22-34 Service the UART
-	DNOP			;35-36
-	DNOP			;37-38
+	call	ServiceUart	;01-13 Service the UART
+	btfsc	FLAGS,MFMLIT	;14 If the byte is to be taken literally, skip
+	bra	DMAMf09		;15(-16)  ahead to skip the checks below
+	movf	X2,W		;16 Check if the byte is an 0xC2 or an 0xA1,
+	xorlw	0xC2		;17  these have to have a clock removed from
+	btfsc	STATUS,Z	;18  their lower MFM byte
+	bra	DMAMf10		;19(-20)  "
+	xorlw	0xA1 ^ 0xC2	;20  "
+	btfsc	STATUS,Z	;21  "
+	bra	DMAMf11		;22(-23)  "
+	call	ServiceUart	;23-35 Service the UART
+	DNOP			;36-37
+	nop			;38
 	call	ServiceUart	;39-51 Service the UART
 DMAMf03	movf	X2,W		;52 Translate lower nibble of original byte into
 	andlw	B'00011111'	;53  LUT index and convert it to an MFM byte
@@ -946,24 +961,25 @@ DMAMf08	clrf	X1		;52 Set literal countdown to 6 so address mark
 	movwf	X0		;54  "
 	movlw	0x55		;55 Set up 0xF's MFM byte to go out
 	bra	DMAMf02		;56-57 Rejoin loop
-DMAMf09	movf	X0,F		;16 Decrement literal byte counter
-	btfsc	STATUS,Z	;17  "
-	decf	X1,F		;18  "
-	decf	X0,F		;19  "
-	call	ServiceUart	;20-32 Service the UART
-	DNOP			;33-34
-	DNOP			;35-36
-	call	ServiceUart	;37-49 Service the UART
-	bra	DMAMf03		;50-51 Rejoin loop
-DMAMf10	call	ServiceUart	;20-32 Service the UART
-	DNOP			;33-34
-	DNOP			;35-36
-	call	ServiceUart	;37-49 Service the UART
-	movlw	0x24		;56 Set up 0x2's MFM byte with missing clock
-	bra	DMAMf04		;57-58 Rejoin loop
-DMAMf11	call	ServiceUart	;23-35 Service the UART
+DMAMf09	movf	X0,F		;17 Decrement literal byte counter
+	btfsc	STATUS,Z	;18  "
+	decf	X1,F		;19  "
+	decf	X0,F		;20  "
+	call	ServiceUart	;21-33 Service the UART
+	DNOP			;34-35
 	nop			;36
 	call	ServiceUart	;37-49 Service the UART
+	bra	DMAMf03		;50-51 Rejoin loop
+DMAMf10	call	ServiceUart	;21-33 Service the UART
+	DELAY	3		;34-42
+	call	ServiceUart	;43-55 Service the UART
+	movlw	0x24		;56 Set up 0x2's MFM byte with missing clock
+	bra	DMAMf04		;57-58 Rejoin loop
+DMAMf11	call	ServiceUart	;24-36 Service the UART
+	DNOP			;37-38
+	DNOP			;39-40
+	DNOP			;41-42
+	call	ServiceUart	;43-55 Service the UART
 	movlw	0x89		;56 Set up 0x1's MFM byte with missing clock
 	bra	DMAMf04		;57-58 Rejoin loop
 DMAMf12	call	ServiceUart	;Data ran dry, so just spin and wait for a break

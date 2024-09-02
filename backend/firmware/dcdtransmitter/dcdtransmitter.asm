@@ -256,7 +256,7 @@ Init
 	banksel	TRISA		;LC3OUT output, LC1OUT output sometimes but not
 	bcf	CTR_PORT,CTR_PIN; yet, all others inputs
 
-	movlb	7		;Initialize key globals
+	movlp	high PortToCmd	;Initialize key globals
 
 	banksel	OSCSTAT		;Spin until PLL is ready and instruction clock
 	btfss	OSCSTAT,PLLR	; gears up to 8 MHz
