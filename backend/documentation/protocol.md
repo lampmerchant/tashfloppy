@@ -171,6 +171,6 @@ This format is selected when `0xE4` was the last Enter Data Mode command sent by
 The receiver waits for a sequence of 60 or more 'sync' bits, i.e. clock bits separated by 2 us, followed by a one data bit separated from the clock bits by a gap of 3 us, before relaying any data to the frontend.  Once this sequence is received, data bits are packed from MSb to LSb into 8-bit bytes and relayed directly to the frontend.  No special treatment is given to the `0xC2` and `0xA1` bytes that precede index, address, and data marks, and the frontend must infer their existence by context.
 
 
-## `0x8E` - Eject Disk
+### `0x8E` - Eject Disk
 
 This command indicates that the Macintosh has ejected the emulated floppy disk.
