@@ -59,8 +59,7 @@ DNOP	macro
 ;;; Constants ;;;
 
 ;FLAGS:
-MFMMODE	equ	7	;Set when drive MFMMODE signal is high
-DATMODE	equ	6	;Set when mainline is in data mode
+DATMODE	equ	7	;Set when mainline is in data mode
 
 ;UART protocol bytes:
 ;Break character indicates exiting data mode
@@ -82,8 +81,8 @@ UPEJECT	equ	0x8E	;Eject disk
 	
 	FLAGS	;You've got to have flags
 	TRACK	;Current track where head is placed
-	X13
-	X12
+	RECVSEL	;Receiver selection
+	W_TEMP	;Used by interrupt handler with raw GCR receiver
 	X11
 	X10
 	X9
@@ -113,6 +112,7 @@ UPEJECT	equ	0x8E	;Eject disk
 ;;; Interrupt Handler ;;;
 
 Interrupt
+	movwf	W_TEMP		;Save W in case we're coming from raw GCR
 	movlb	0		;Grab the command port as early as possible in
 	movf	CMD_PORT,W	; case CA3 was pulsed
 	movlp	0		;We might be interrupting from receive
@@ -121,28 +121,39 @@ Interrupt
 	call	IntCa3		; "
 	movlb	7		;If !WRREQ changed state, handle it
 	btfsc	NWQ_IOCF,NWQ_PIN; "
-	call	IntNWrreq	; "
+	call	IntNwrreq	; "
 	retfie			;Done
 
-IntNWrreq
+IntNwrreq
 	bcf	NWQ_IOCF,NWQ_PIN;Clear the interrupt
 	movlb	0		;If !ENBL is high, this !WRREQ change is not for
 	btfsc	NEN_PORT,NEN_PIN; us, so return
 	return			; "
 	btfss	NWQ_PORT,NWQ_PIN;If !WRREQ is now low, skip ahead
-	bra	IntNWrreqFalling; "
+	bra	IntNwrreqFalling; "
 	;fall through		;Else fall through
 
-IntNWrreqRising
+IntNwrreqRising
 	btfss	FLAGS,DATMODE	;If we're not in data mode, don't act on this
 	return			; change
 	bcf	FLAGS,DATMODE	;Exit data mode
-	movlb	3		;Just in case, make sure UART isn't transmitting
-	btfss	TXSTA,TRMT	; because we're about to send a break
-	bra	$-1		; "
-	bsf	RCSTA,CREN	;Reenable the UART receiver
-	bsf	TXSTA,SENDB	;Send break character
-	clrf	TXREG		; "
+	movlb	3		;Reenable the UART receiver
+	bsf	RCSTA,CREN	; "
+INRisi0	movlb	0		;Flush the UART FIFO in case there's remnant
+	btfss	PIR1,RCIF	; data from the frontend in it that might be
+	bra	INRisi1		; taken as a command
+	movlb	3		; "
+	movf	RCREG,W		; "
+	bra	INRisi0		; "
+INRisi1	movlb	3		;About to do some stuff with UART
+	btfss	RECVSEL,3	;If we're coming from a raw receiver, transmit
+	bra	INRisi2		; the contents of W as it might contain some
+	movf	W_TEMP,W	; untransmitted data
+	movwf	TXREG		; "
+INRisi2	btfss	TXSTA,TRMT	;Wait until UART is done transmitting because
+	bra	$-1		; we're about to send a break
+	bsf	TXSTA,SENDB	;Send break character to signal to frontend that
+	clrf	TXREG		; receive is over
 	movlb	31		;Clear out the stack and return to WaitCommand
 	clrf	STKPTR		; "
 	movlw	high WaitCommand; "
@@ -152,7 +163,7 @@ IntNWrreqRising
 	clrf	PCLATH_SHAD	; "
 	retfie			; "
 
-IntNWrreqFalling
+IntNwrreqFalling
 	btfsc	FLAGS,DATMODE	;If we're already in data mode, don't act on
 	return			; this change
 	bsf	FLAGS,DATMODE	;Enter data mode
@@ -167,17 +178,33 @@ IntNWrreqFalling
 	movlb	3		;Disable the UART receiver so it doesn't get
 	bcf	RCSTA,CREN	; wedged from remaining data from frontend
 	movlb	31		;Clear out the stack and 'return' to the
-	clrf	STKPTR		; receiver for GCR or MFM as appropriate
-	movlw	high GcrRecvFDD	; "
-	btfsc	FLAGS,MFMMODE	; "
-	movlw	high RecvMfm	; "
+	clrf	STKPTR		; selected receiver
+	movf	RECVSEL,W	; "
+	brw			; "
+	movlw	high GcrRecvFDD	;0x00 = GCR floppy auto receiver
 	movwf	TOSH		; "
 	movwf	PCLATH_SHAD	; "
 	movlw	low GcrRecvFDD	; "
-	btfsc	FLAGS,MFMMODE	; "
+	movwf	TOSL		; "
+	retfie			; "
+	nop
+	nop
+	movlw	high GcrRecvRaw	;0x08 = GCR raw receiver
+	movwf	TOSH		; "
+	movlw	low GcrRecvRaw	; "
+	movwf	TOSL		; "
+	return			;Enter without reenabling interrupts
+	nop
+	nop
+	nop
+	movlw	high RecvMfm	;0x10 = MFM receiver
+	movwf	TOSH		; "
+	movwf	PCLATH_SHAD	; "
 	movlw	low RecvMfm	; "
 	movwf	TOSL		; "
 	retfie			; "
+	nop
+	nop
 
 IntCa3
 	bcf	CA3_IOCF,CA3_PIN;Clear the interrupt
@@ -238,7 +265,6 @@ ICStep0	movf	TRACK,W		;If track is not already 0, decrement it
 	return			;Done
 
 IntCa3MfmMode
-	bsf	FLAGS,MFMMODE	;Set internal MFMMODE flag high
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
 	return			; signal host (hopefully this doesn't happen)
 	movlw	UPMFM		;Signal to host that we're now in MFM mode
@@ -258,7 +284,6 @@ IntCa3DirtnHigh
 	return			;Done
 
 IntCa3GcrMode
-	bcf	FLAGS,MFMMODE	;Set internal MFMMODE flag low
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
 	return			; signal host (hopefully this doesn't happen)
 	movlw	UPGCR		;Signal to host that we're now in GCR mode
@@ -396,6 +421,7 @@ Init
 
 	clrf	FLAGS		;Initialize key globals
 	clrf	TRACK
+	clrf	RECVSEL
 	movlw	high TXREG
 	movwf	FSR1H
 	movlw	low TXREG
@@ -491,11 +517,11 @@ DataMode
 	movf	X0,W		;Switch off based on the low nibble of the
 	andlw	B'00001111'	; command byte
 	brw			; "
-	bra	DataModeSink	;0xE0 - auto GCR
-	bra	DataModeSink	;0xE1 - raw GCR with random noise
+	bra	DataModeAutoGcr	;0xE0 - auto GCR
+	bra	DataModeRawGcr	;0xE1 - raw GCR with random noise
 	bra	WaitCommand	;0xE2 - invalid
 	bra	WaitCommand	;0xE3 - invalid
-	bra	DataModeSink	;0xE4 - auto MFM
+	bra	DataModeAutoMfm	;0xE4 - auto MFM
 	bra	WaitCommand	;0xE5 - invalid
 	bra	WaitCommand	;0xE6 - invalid
 	bra	WaitCommand	;0xE7 - invalid
@@ -516,7 +542,6 @@ HwConfigNoDrive
 	bsf	CLC1GLS2,6	;Set !STEP high
 	bsf	CLC2GLS0,6	;Set !MOTORON high
 	bsf	CLC2GLS0,7	;Set !TK0 high
-	bcf	FLAGS,MFMMODE	;Select GCR mode
 	bra	WaitCommand	;Done
 
 HwConfigYesDrive
@@ -527,7 +552,6 @@ HwConfigYesDrive
 	bsf	CLC1GLS2,6	;Set !STEP high
 	bcf	CLC2GLS0,7	;Set !TK0 low
 	bsf	CLC2GLS0,6	;Set !MOTORON high
-	bcf	FLAGS,MFMMODE	;Select GCR mode
 	clrf	TRACK		;Select track zero
 	bra	WaitCommand	;Done
 
@@ -550,6 +574,20 @@ InsertDiskDdRw
 	bcf	CLC1GLS0,7	;Set !CSTIN low
 	bsf	CLC1GLS2,7	;Set !WRPROT high
 	bra	WaitCommand	;Done
+
+DataModeAutoGcr
+	clrf	RECVSEL		;Select the corresponding receiver for auto GCR
+	bra	DataModeSink	;Sink data while relaying state of SEL
+
+DataModeRawGcr
+	movlw	0x08		;Select the corresponding receiver for raw GCR
+	movwf	RECVSEL		; "
+	bra	DataModeSink	;Sink data while relaying state of SEL
+
+DataModeAutoMfm
+	movlw	0x10		;Select the corresponding receiver for auto MFM
+	movwf	RECVSEL		; "
+	;fall through		;Sink data while relaying state of SEL
 
 DataModeSink
 	movlb	30		;Set !STEP high
@@ -3265,6 +3303,98 @@ Gcr4F1	bsf	FSR0L,1		;003 cycles, 0.18 bit times
 	goto	GcrSt0		;025 cycles, 1.53 bit times
 Gcr4F0	bsf	FSR0L,0		;003 cycles, 0.18 bit times
 	goto	GcrSt0		;004 cycles, 0.24 bit times
+
+
+;;; GCR Raw Receiver ;;;
+
+GcrRecvRaw
+	movlb	0		;007 cycles, 0.43 bit times
+	movlw	B'11111110'	;008 cycles, 0.49 bit times
+	bsf	STATUS,C	;009 cycles, 0.55 bit times
+	bra	GRRFal1		;010-011 cycles, 0.61-0.67 bit times
+	;fall through
+
+GcrRecvRawFall
+	DNOP			;003-004 cycles, 0.18-0.24 bit times
+	nop			;005 cycles, 0.31 bit times
+	bcf	INTCON,GIE	;006 cycles, 0.37 bit times
+	rlf	WREG,W		;007 cycles, 0.43 bit times
+	btfsc	WREG,7		;008 cycles, 0.49 bit times
+	bra	GRRFal2		;009 cycles, 0.55 bit times
+GRRFal0	movwf	INDF1		;010 cycles, 0.61 bit times
+	movlw	B'11111110'	;011 cycles, 0.67 bit times
+GRRFal1	bsf	INTCON,GIE	;012 cycles, 0.73 bit times
+	btfsc	NWR_PORT,NWR_PIN;013 cycles, 0.80 bit times
+	bra	GcrRecvRawRise	;014 cycles, 0.86 bit times
+	btfsc	NWR_PORT,NWR_PIN;015 cycles, 0.92 bit times
+	bra	GcrRecvRawRise	;016 cycles, 0.98 bit times
+	btfsc	NWR_PORT,NWR_PIN;017 cycles, 1.04 bit times
+	bra	GcrRecvRawRise	;018 cycles, 1.10 bit times
+	btfsc	NWR_PORT,NWR_PIN;019 cycles, 1.16 bit times
+	bra	GcrRecvRawRise	;020 cycles, 1.22 bit times
+	bcf	INTCON,GIE	;021 cycles, 1.29 bit times
+	lslf	WREG,W		;022 cycles, 1.35 bit times
+	btfss	WREG,7		;023 cycles, 1.41 bit times
+	bra	GRRFal0		;024 cycles, 1.47 bit times
+	bsf	INTCON,GIE	;025 cycles, 1.53 bit times
+	bra	GRRFal1		;026-027 cycles, 1.59-1.65 bit times
+GRRFal2	bsf	INTCON,GIE	;011 cycles, 0.67 bit times
+	nop			;012 cycles, 0.73 bit times
+	btfsc	NWR_PORT,NWR_PIN;013 cycles, 0.80 bit times
+	bra	GcrRecvRawRise	;014 cycles, 0.86 bit times
+	btfsc	NWR_PORT,NWR_PIN;015 cycles, 0.92 bit times
+	bra	GcrRecvRawRise	;016 cycles, 0.98 bit times
+	btfsc	NWR_PORT,NWR_PIN;017 cycles, 1.04 bit times
+	bra	GcrRecvRawRise	;018 cycles, 1.10 bit times
+	btfsc	NWR_PORT,NWR_PIN;019 cycles, 1.16 bit times
+	bra	GcrRecvRawRise	;020 cycles, 1.22 bit times
+	bcf	INTCON,GIE	;021 cycles, 1.29 bit times
+	lslf	WREG,W		;022 cycles, 1.35 bit times
+	btfss	WREG,7		;023 cycles, 1.41 bit times
+	bra	GRRFal0		;024 cycles, 1.47 bit times
+	bsf	INTCON,GIE	;025 cycles, 1.53 bit times
+	bra	GRRFal1		;026-027 cycles, 1.59-1.65 bit times
+
+GcrRecvRawRise
+	DNOP			;003-004 cycles, 0.18-0.24 bit times
+	nop			;005 cycles, 0.31 bit times
+	bcf	INTCON,GIE	;006 cycles, 0.37 bit times
+	rlf	WREG,W		;007 cycles, 0.43 bit times
+	btfsc	WREG,7		;008 cycles, 0.49 bit times
+	bra	GRRRis2		;009 cycles, 0.55 bit times
+GRRRis0	movwf	INDF1		;010 cycles, 0.61 bit times
+	movlw	B'11111110'	;011 cycles, 0.67 bit times
+GRRRis1	bsf	INTCON,GIE	;012 cycles, 0.73 bit times
+	btfss	NWR_PORT,NWR_PIN;013 cycles, 0.80 bit times
+	bra	GcrRecvRawFall	;014 cycles, 0.86 bit times
+	btfss	NWR_PORT,NWR_PIN;015 cycles, 0.92 bit times
+	bra	GcrRecvRawFall	;016 cycles, 0.98 bit times
+	btfss	NWR_PORT,NWR_PIN;017 cycles, 1.04 bit times
+	bra	GcrRecvRawFall	;018 cycles, 1.10 bit times
+	btfss	NWR_PORT,NWR_PIN;019 cycles, 1.16 bit times
+	bra	GcrRecvRawFall	;020 cycles, 1.22 bit times
+	bcf	INTCON,GIE	;021 cycles, 1.29 bit times
+	lslf	WREG,W		;022 cycles, 1.35 bit times
+	btfss	WREG,7		;023 cycles, 1.41 bit times
+	bra	GRRRis0		;024 cycles, 1.47 bit times
+	bsf	INTCON,GIE	;025 cycles, 1.53 bit times
+	bra	GRRRis1		;026-027 cycles, 1.59-1.65 bit times
+GRRRis2	bsf	INTCON,GIE	;011 cycles, 0.67 bit times
+	nop			;012 cycles, 0.73 bit times
+	btfss	NWR_PORT,NWR_PIN;013 cycles, 0.80 bit times
+	bra	GcrRecvRawFall	;014 cycles, 0.86 bit times
+	btfss	NWR_PORT,NWR_PIN;015 cycles, 0.92 bit times
+	bra	GcrRecvRawFall	;016 cycles, 0.98 bit times
+	btfss	NWR_PORT,NWR_PIN;017 cycles, 1.04 bit times
+	bra	GcrRecvRawFall	;018 cycles, 1.10 bit times
+	btfss	NWR_PORT,NWR_PIN;019 cycles, 1.16 bit times
+	bra	GcrRecvRawFall	;020 cycles, 1.22 bit times
+	bcf	INTCON,GIE	;021 cycles, 1.29 bit times
+	lslf	WREG,W		;022 cycles, 1.35 bit times
+	btfss	WREG,7		;023 cycles, 1.41 bit times
+	bra	GRRRis0		;024 cycles, 1.47 bit times
+	bsf	INTCON,GIE	;025 cycles, 1.53 bit times
+	bra	GRRRis1		;026-027 cycles, 1.59-1.65 bit times
 
 
 ;;; Lookup Tables ;;;
