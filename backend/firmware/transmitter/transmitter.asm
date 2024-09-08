@@ -83,7 +83,7 @@ Z4RPM	equ	590	;RPM in speed zone 4 (tracks 64-79)
 	TACHFSL	; at intervals
 	TACHFCH	;Tachometer feather count-up timer; when over limit, it swaps
 	TACHFCL	; the CCP register with TACHFSH:L
-	X9
+	INDXCNT	;Countdown of 5 ms periods to index pulse
 	X8
 	X7
 	X6
@@ -117,10 +117,13 @@ Interrupt
 	call	IntCa3		; "
 	movlb	7		;If !WRREQ changed state, handle it
 	btfsc	NWQ_IOCF,NWQ_PIN; "
-	call	IntNWrreq	; "
+	call	IntNwrreq	; "
+	movlb	0		;If Timer2 has interrupted, handle it
+	btfsc	PIR1,TMR2IF	; "
+	call	IntIndex	; "
 	retfie			;Done
 
-IntNWrreq
+IntNwrreq
 	bcf	NWQ_IOCF,NWQ_PIN;Clear the interrupt
 	movlb	0		;If !ENBL is high, this !WRREQ change is not for
 	btfsc	NEN_PORT,NEN_PIN; us, so return
@@ -130,22 +133,33 @@ IntNWrreq
 	return			; "
 	movlb	0		;If !WRREQ is now low, skip ahead
 	btfss	NWQ_PORT,NWQ_PIN; "
-	bra	IntNWrreqFalling; "
+	bra	IntNwrreqFalling; "
 	;fall through		;Else fall through
 
-IntNWrreqRising
-	movlw	B'10010';SDO	;Set output of CLC1 when CA0 is low to be
-	movwf	CLC1SEL0	; determined by SSP
+IntNwrreqRising
+	movlb	30		;Set output of CLC1 when CA0 is low to be
+	movlw	B'10010';SDO	; determined by SSP
+	movwf	CLC1SEL0	; "
 	movlw	B'00000101'	; "
 	movwf	CLC1GLS0	; "
+	movlb	0		;Reset and stop Timer2
+	bcf	T2CON,TMR2ON	; "
+	clrf	TMR2		; "
+	bcf	PIR1,TMR2IF	; "
 	return			;Done
 
-IntNWrreqFalling
-	movlw	B'01100';CCP1	;Set output of CLC1 when CA0 is low to be
-	movwf	CLC1SEL0	; determined by CCP1
+IntNwrreqFalling
+	movlb	30		;Set output of CLC1 when CA0 is low to be
+	movlw	B'01100';CCP1	; determined by CCP1
+	movwf	CLC1SEL0	; "
 	movlw	B'00000010'	; "
 	movwf	CLC1GLS0	; "
-	;TODO start generating properly-spaced index pulses with CCP
+	movlw	4		;Set the index pulse countdown to 20 ms, that's
+	movwf	INDXCNT		; soon but well beyond a single sector's write
+	movlb	0		;Reset and start Timer2
+	bcf	PIR1,TMR2IF	; "
+	clrf	TMR2		; "
+	bsf	T2CON,TMR2ON	; "
 	return			;Done
 
 IntCa3
@@ -207,6 +221,26 @@ IntCa3GcrMode
 IntCa3Eject
 	btfsc	CLC1GLS2,6	;If SUPERDRIVE is high, set PRESENT/!HD low
 	bcf	CLC2GLS2,7	; "
+	return			;Done
+
+IntIndex
+	bcf	PIR1,TMR2IF	;Clear the interrupt
+	decfsz	INDXCNT,F	;Decrement the index countdown and proceed only
+	return			; when it hits zero
+	movlb	0		;Reset Timer1
+	clrf	T1CON		; "
+	clrf	TMR1H		; "
+	clrf	TMR1L		; "
+	bsf	T1CON,TMR1ON	; "
+	movlb	5		;Set CCP1 to go high now and go low when 2.048
+	movlw	B'00001001'	; ms elapse, as SetupForMfm prepared
+	clrf	CCP1CON		; "
+	movwf	CCP1CON		; "
+	movlb	30		;Set the index pulse countdown to measure 200 ms
+	movlw	40		; (300 RPM) for a high density disk and 100 ms
+	btfsc	CLC2GLS2,7	; (600 RPM) for a double density disk
+	movlw	20		; "
+	movwf	INDXCNT		; "
 	return			;Done
 
 
@@ -309,6 +343,12 @@ Init
 	movlw	127
 	movwf	PR4
 
+	banksel	T2CON		;Timer2 ticks 1:16 with instruction clock when
+	movlw	B'01001010'	; running but not started yet, period and post-
+	movwf	T2CON		; scaler set so it interrupts once every 40,000
+	movlw	250		; cycles (5 ms)
+	movwf	PR2
+
 	banksel	IOCAP		;CA3 interrupts on rising edge, !WRREQ on either
 	bsf	CA3_IOCP,CA3_PIN
 	bsf	NWQ_IOCP,NWQ_PIN
@@ -348,6 +388,10 @@ Init
 	bcf	CTS_PORT,CTS_PIN
 	bcf	TTD_PORT,TTD_PIN
 
+	banksel	PIE1		;Timer2 interrupt enabled
+	movlw	1 << TMR2IE
+	movwf	PIE1
+
 	movlw	0x20		;Point queue pop (FSR0) and push (FSR1) pointers
 	movwf	FSR0H		; to first 256 bytes of linear memory
 	movwf	FSR1H
@@ -368,8 +412,8 @@ Init
 	banksel	LATA		;CTS low (asserted) so host sends data
 	bcf	CTS_PORT,CTS_PIN
 
-	movlw	B'10001000'	;Interrupt subsystem and interrupt-on-change
-	movwf	INTCON		; interrupts on
+	movlw	B'11001000'	;Interrupt subsystem, peripheral interrupts (for
+	movwf	INTCON		; Timer2) and interrupt-on-change interrupts on
 
 	;fall through
 
