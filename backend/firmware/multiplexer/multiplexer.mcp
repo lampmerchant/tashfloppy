@@ -39,10 +39,10 @@ file_001=no
 file_002=no
 file_003=no
 [FILE_INFO]
-file_000=dcdtransmitter.asm
+file_000=multiplexer.asm
 file_001=C:\Program Files\Microchip\MPASM Suite\p16f1704.inc
-file_002=dcdtransmitter_lut.inc
-file_003=dcdtransmitter_pinout.inc
+file_002=multiplexer_lut.inc
+file_003=multiplexer_pinout.inc
 [SUITE_INFO]
 suite_guid={6B3DAA78-59C1-46DD-B6AA-DBDAE4E06484}
 suite_state=generate-absolute-code

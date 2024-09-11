@@ -59,7 +59,9 @@ DNOP	macro
 ;;; Constants ;;;
 
 ;FLAGS:
-DATMODE	equ	7	;Set when mainline is in data mode
+NDIRTN	equ	7	;Set when track number decreases on step (toward rim)
+SUPRDRV	equ	6	;Set when emulated drive is a superdrive (FDHD)
+DATMODE	equ	5	;Set when mainline is in data mode
 
 ;UART protocol bytes:
 ;Break character indicates exiting data mode
@@ -92,9 +94,9 @@ UPEJECT	equ	0x8E	;Eject disk
 	X5
 	X4
 	X3
-	X2
-	X1
-	X0
+	X2	;Various purposes
+	X1	; "
+	X0	; "
 	
 	endc
 
@@ -115,27 +117,26 @@ Interrupt
 	movwf	W_TEMP		;Save W in case we're coming from raw GCR
 	movlb	0		;Grab the command port as early as possible in
 	movf	CMD_PORT,W	; case CA3 was pulsed
-	movlp	0		;We might be interrupting from receive
 	movlb	7		;If CA3 was pulsed, handle it
 	btfsc	CA3_IOCF,CA3_PIN; "
-	call	IntCa3		; "
-	movlb	7		;If !WRREQ changed state, handle it
+	bra	IntCa3		; "
+Interr0	movlb	7		;If !WRREQ changed state, handle it
 	btfsc	NWQ_IOCF,NWQ_PIN; "
-	call	IntNwrreq	; "
+	bra	IntNwrreq	; "
 	retfie			;Done
 
 IntNwrreq
 	bcf	NWQ_IOCF,NWQ_PIN;Clear the interrupt
 	movlb	0		;If !ENBL is high, this !WRREQ change is not for
 	btfsc	NEN_PORT,NEN_PIN; us, so return
-	return			; "
+	retfie			; "
 	btfss	NWQ_PORT,NWQ_PIN;If !WRREQ is now low, skip ahead
 	bra	IntNwrreqFalling; "
 	;fall through		;Else fall through
 
 IntNwrreqRising
 	btfss	FLAGS,DATMODE	;If we're not in data mode, don't act on this
-	return			; change
+	retfie			; change
 	bcf	FLAGS,DATMODE	;Exit data mode
 	movlb	3		;Reenable the UART receiver
 	bsf	RCSTA,CREN	; "
@@ -165,7 +166,7 @@ INRisi2	btfss	TXSTA,TRMT	;Wait until UART is done transmitting because
 
 IntNwrreqFalling
 	btfsc	FLAGS,DATMODE	;If we're already in data mode, don't act on
-	return			; this change
+	retfie			; this change
 	bsf	FLAGS,DATMODE	;Enter data mode
 	movlb	3		;Just in case, make sure UART isn't transmitting
 	btfss	TXSTA,TRMT	; "
@@ -210,102 +211,101 @@ IntCa3
 	bcf	CA3_IOCF,CA3_PIN;Clear the interrupt
 	movlb	0		;If !ENBL is high, this CA3 pulse is not for us,
 	btfsc	NEN_PORT,NEN_PIN; so return
-	return			; "
+	bra	Interr0		; "
 	iorlw	B'11000000'	;Translate the command port read into a command
 	movlp	high PortToCmd	; "
 	callw			; "
-	movlp	0		; "
 	movlb	30		;Switch to CLC bank, common need among commands
 	brw			;CA2 CA1 CA0 SEL Effect
 	bra	IntCa3DirtnLow	;0   0   0   0   Set !DIRTN low
-	return			;0   0   0   1   none
+	bra	Interr0		;0   0   0   1   none
 	bra	IntCa3Step	;0   0   1   0   Step drive heads
 	bra	IntCa3MfmMode	;0   0   1   1   Select MFM mode
 	bra	IntCa3MotorOn	;0   1   0   0   Turn motor on
-	return			;0   1   0   1   none
-	return			;0   1   1   0   none
-	return			;0   1   1   1   none
+	bra	Interr0		;0   1   0   1   none
+	bra	Interr0		;0   1   1   0   none
+	bra	Interr0		;0   1   1   1   none
 	bra	IntCa3DirtnHigh	;1   0   0   0   Set !DIRTN high
-	return			;1   0   0   1   Reset SWITCHED to low (ignore)
-	return			;1   0   1   0   none
+	bra	Interr0		;1   0   0   1   Reset SWITCHED to low (ignore)
+	bra	Interr0		;1   0   1   0   none
 	bra	IntCa3GcrMode	;1   0   1   1   Select GCR mode
 	bra	IntCa3MotorOff	;1   1   0   0   Turn motor off
-	return			;1   1   0   1   none
+	bra	Interr0		;1   1   0   1   none
 	bra	IntCa3Eject	;1   1   1   0   Eject disk
-	return			;1   1   1   1   none
+	bra	Interr0		;1   1   1   1   none
 
 IntCa3DirtnLow
-	bcf	CLC1GLS0,6	;Set !DIRTN low
-	return			;Done
+	bcf	FLAGS,NDIRTN	;Set internal !DIRTN flag low
+	bra	Interr0		;Done
 
 IntCa3Step
-	bcf	CLC1GLS2,6	;Set !STEP low
-	btfsc	CLC1GLS0,6	;If !DIRTN is high (decrement track, toward
+	bsf	CLC2GLS0,7	;Set !READY high
+	btfsc	FLAGS,NDIRTN	;If !DIRTN is high (decrement track, toward
 	bra	ICStep0		; rim), skip ahead
-	bsf	CLC2GLS0,7	;Set !TK0 high
+	bsf	CLC1GLS0,7	;Set !TK0 high
 	incf	TRACK,F		;Increment track
 	movf	TRACK,W		;If we hit track 80, go back to 79
 	xorlw	80		; "
 	btfsc	STATUS,Z	; "
 	decf	TRACK,F		; "
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movf	TRACK,W		;Signal to host that we've stepped to this track
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 ICStep0	movf	TRACK,W		;If track is not already 0, decrement it
 	btfss	STATUS,Z	; "
 	decf	TRACK,F		; "
 	btfsc	STATUS,Z	;If track is zero, set !TK0 low
-	bcf	CLC2GLS0,7	; "
+	bcf	CLC1GLS0,7	; "
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movf	TRACK,W		;Signal to host that we've stepped to this track
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 
 IntCa3MfmMode
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movlw	UPMFM		;Signal to host that we're now in MFM mode
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 
 IntCa3MotorOn
-	bcf	CLC2GLS0,6	;Set !MOTORON low
+	bcf	CLC1GLS0,6	;Set !MOTORON low
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movlw	UPMON		;Signal to host that motor is now on
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 
 IntCa3DirtnHigh
-	bsf	CLC1GLS0,6	;Set !DIRTN high
-	return			;Done
+	bsf	FLAGS,NDIRTN	;Set internal !DIRTN flag high
+	bra	Interr0		;Done
 
 IntCa3GcrMode
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movlw	UPGCR		;Signal to host that we're now in GCR mode
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 
 IntCa3MotorOff
-	bsf	CLC2GLS0,6	;Set !MOTORON high
+	bsf	CLC1GLS0,6	;Set !MOTORON high
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movlw	UPMOFF		;Signal to host that motor is now off
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 
 IntCa3Eject
-	bsf	CLC1GLS0,7	;Set !CSTIN high
-	bcf	CLC1GLS2,7	;Set !WRPROT low
+	btfsc	FLAGS,SUPRDRV	;If SUPERDRIVE is high, set PRESENT/!HD low
+	bcf	CLC2GLS2,7	; "
 	btfsc	FLAGS,DATMODE	;If we're in data mode for some reason, don't
-	return			; signal host (hopefully this doesn't happen)
+	bra	Interr0		; signal host (hopefully this doesn't happen)
 	movlw	UPEJECT		;Signal to host that disk was ejected
 	movwf	INDF1		; "
-	return			;Done
+	bra	Interr0		;Done
 
 
 ;;; Hardware Initialization ;;;
@@ -327,40 +327,40 @@ Init
 	movwf	RCSTA
 
 	banksel	CLC1CON		;CLC1:
+	clrf	CLC1SEL1;CLCIN0	;If CLCIN2 (CA0) is low, output is:
+	movlw	B'00010';CLCIN2	; !MOTORON   !TK0        Output   CLC1GLS0
+	movwf	CLC1SEL2; (CA0)	; (SEL low)  (SEL high)
+	movlw	B'00011';CLCIN3	; 0          0           0        00000000
+	movwf	CLC1SEL3; (SEL)	; 0          1           SEL      10000000
+	movlw	B'11000000'	; 1          0           NOT SEL  01000000
+	movwf	CLC1GLS0	; 1          1           1        11000000 (def)
+	movlw	B'00010000'	;If CLCIN2 (CA0) is high, output is LC3OUT from
+	movwf	CLC1GLS1	; multiplexer (CLCIN0)
+	movlw	B'00001000'
+	movwf	CLC1GLS2
+	movlw	B'00100000'
+	movwf	CLC1GLS3
+	clrf	CLC1POL
+	movlw	B'10000000'
+	movwf	CLC1CON		;CLC2:
 	movlw	B'00010';CLCIN2	;If CLCIN2 (CA0) is low, output is:
-	movwf	CLC1SEL2; (CA0)	; !DIRTN     !CSTIN      Output   CLC1GLS0
-	movlw	B'00011';CLCIN3	; (SEL low)  (SEL high)
-	movwf	CLC1SEL3; (SEL)	; 0          0           0        00000000
-	movlw	B'11000000'	; 0          1           SEL      10000000
-	movwf	CLC1GLS0	; 1          0           NOT SEL  01000000
-	movlw	B'00010000'	; 1          1           1        11000000 (def)
-	movwf	CLC1GLS1	;If CLCIN2 (CA0) is high, output is:
-	movlw	B'11000000'	; !STEP      !WRPROT     Output   CLC1GLS2
-	movwf	CLC1GLS2	; (SEL low)  (SEL high)
-	movlw	B'00100000'	; 0          0           0        00000000
-	movwf	CLC1GLS3	; 0          1           SEL      10000000
-	clrf	CLC1POL		; 1          0           NOT SEL  01000000
-	movlw	B'10000000'	; 1          1           1        11000000 (def)
-	movwf	CLC1CON
-	clrf	CLC2SEL1;CLCIN0	;CLC2:
-	movlw	B'00010';CLCIN2	;If CLCIN2 (CA0) is low, output is:
-	movwf	CLC2SEL2; (CA0)	; !MOTORON   !TK0        Output   CLC2GLS0
+	movwf	CLC2SEL2; (CA0)	; SIDES      !READY      Output   CLC2GLS0
 	movlw	B'00011';CLCIN3	; (SEL low)  (SEL high)
 	movwf	CLC2SEL3; (SEL)	; 0          0           0        00000000
 	movlw	B'11000000'	; 0          1           SEL      10000000
 	movwf	CLC2GLS0	; 1          0           NOT SEL  01000000
 	movlw	B'00010000'	; 1          1           1        11000000 (def)
-	movwf	CLC2GLS1	;If CLCIN2 (CA0) is high, output is LC3OUT from
-	movlw	B'00001000'	; DCD transmitter (CLCIN0)
-	movwf	CLC2GLS2
-	movlw	B'00100000'
-	movwf	CLC2GLS3
-	clrf	CLC2POL
-	movlw	B'10000000'
+	movwf	CLC2GLS1	;If CLCIN2 (CA0) is high, output is:
+	movlw	B'11000000'	; !DRVIN     PRESENT/!HD Output   CLC2GLS2
+	movwf	CLC2GLS2	; (SEL low)  (SEL high)
+	movlw	B'00100000'	; 0          0           0        00000000
+	movwf	CLC2GLS3	; 0          1           SEL      10000000
+	clrf	CLC2POL		; 1          0           NOT SEL  01000000
+	movlw	B'10000000'	; 1          1           1        11000000 (def)
 	movwf	CLC2CON
 	movlw	B'00001';CLCIN1	;CLC3:
-	movwf	CLC3SEL1; (CA1)	;If CLCIN1 (CA1) is low, output is LC1OUT
-	movlw	B'00100';LC1OUT	;If CLCIN1 (CA1) is high, output is LC2OUT
+	movwf	CLC3SEL1; (CA2)	;If CLCIN1 (CA2) is low, output is LC1OUT
+	movlw	B'00100';LC1OUT	;If CLCIN1 (CA2) is high, output is LC2OUT
 	movwf	CLC3SEL2
 	movlw	B'00101';LC2OUT
 	movwf	CLC3SEL3
@@ -395,14 +395,14 @@ Init
 
 	banksel	RA0PPS		;Set up PPS outputs
 	movlw	B'00110';LC3OUT
-	movwf	CTD_PPS
+	movwf	CTM_PPS
 	movlw	B'10100';TX
 	movwf	TX_PPS
 
 	banksel	CKPPS		;Set up PPS inputs
-	movlw	CFD_PPSI
+	movlw	CFM_PPSI
 	movwf	CLCIN0PPS
-	movlw	CA1_PPSI
+	movlw	CA2_PPSI
 	movwf	CLCIN1PPS
 	movlw	CA0_PPSI
 	movwf	CLCIN2PPS
@@ -416,7 +416,7 @@ Init
 	movwf	CKPPS
 
 	banksel	TRISA		;LC3OUT and Tx outputs, all others inputs
-	bcf	CTD_PORT,CTD_PIN
+	bcf	CTM_PORT,CTM_PIN
 	bcf	TX_PORT,TX_PIN
 
 	clrf	FLAGS		;Initialize key globals
@@ -476,9 +476,9 @@ HwConfig
 	andlw	B'00001111'	; command byte
 	brw			; "
 	bra	HwConfigNoDrive	;0xC0 - no drive
-	bra	HwConfigYesDrive;0xC1 - 400k drive
-	bra	HwConfigYesDrive;0xC2 - 800k drive
-	bra	HwConfigYesDrive;0xC3 - superdrive
+	bra	HwConfig400k	;0xC1 - 400 kB drive
+	bra	HwConfig800k	;0xC2 - 800 kB drive
+	bra	HwConfigSuper	;0xC3 - superdrive
 	bra	WaitCommand	;0xC4 - invalid
 	bra	WaitCommand	;0xC5 - invalid
 	bra	WaitCommand	;0xC6 - invalid
@@ -536,43 +536,63 @@ DataMode
 
 HwConfigNoDrive
 	movlb	30		;Set signals for no drive:
-	bsf	CLC1GLS0,7	;Set !CSTIN high
-	bsf	CLC1GLS0,6	;Set !DIRTN high
-	bsf	CLC1GLS2,7	;Set !WRPROT low
-	bsf	CLC1GLS2,6	;Set !STEP high
-	bsf	CLC2GLS0,6	;Set !MOTORON high
-	bsf	CLC2GLS0,7	;Set !TK0 high
+	bsf	CLC1GLS0,6	;Set !MOTORON high
+	bsf	CLC1GLS0,7	;Set !TK0 high
+	bsf	CLC2GLS0,6	;Set SIDES high
+	bsf	CLC2GLS2,6	;Set !DRVIN high
+	bsf	CLC2GLS2,7	;Set PRESENT/!HD high
+	bsf	FLAGS,NDIRTN	;Set !DIRTN high
 	bra	WaitCommand	;Done
 
-HwConfigYesDrive
-	movlb	30		;Set initial signals for drive:
-	bsf	CLC1GLS0,7	;Set !CSTIN high
-	bsf	CLC1GLS0,6	;Set !DIRTN high
-	bcf	CLC1GLS2,7	;Set !WRPROT low
-	bsf	CLC1GLS2,6	;Set !STEP high
-	bcf	CLC2GLS0,7	;Set !TK0 low
-	bsf	CLC2GLS0,6	;Set !MOTORON high
+HwConfig400k
+	movlb	30		;Set initial signals for 400 kB drive:
+	bsf	CLC1GLS0,6	;Set !MOTORON high
+	bcf	CLC1GLS0,7	;Set !TK0 low
+	bcf	CLC2GLS0,6	;Set SIDES low
+	bcf	CLC2GLS2,6	;Set !DRVIN low
+	bcf	CLC2GLS2,7	;Set PRESENT/!HD low
+	bsf	FLAGS,NDIRTN	;Set !DIRTN high
+	bcf	FLAGS,SUPRDRV	;Set SUPERDRIVE low
 	clrf	TRACK		;Select track zero
 	bra	WaitCommand	;Done
 
-InsertDiskEject
-	movlb	30		;Set signals for no disk:
-	bsf	CLC1GLS0,7	;Set !CSTIN high
-	bcf	CLC1GLS2,7	;Set !WRPROT low
+HwConfig800k
+	movlb	30		;Set initial signals for 800 kB drive:
+	bsf	CLC1GLS0,6	;Set !MOTORON high
+	bcf	CLC1GLS0,7	;Set !TK0 low
+	bsf	CLC2GLS0,6	;Set SIDES high
+	bcf	CLC2GLS2,6	;Set !DRVIN low
+	bsf	CLC2GLS2,7	;Set PRESENT/!HD (actually REVISED) high
+	bsf	FLAGS,NDIRTN	;Set !DIRTN high
+	bcf	FLAGS,SUPRDRV	;Set SUPERDRIVE low
+	clrf	TRACK		;Select track zero
+	bra	WaitCommand	;Done
+
+HwConfigSuper
+	movlb	30		;Set initial signals for superdrive:
+	bsf	CLC1GLS0,6	;Set !MOTORON high
+	bcf	CLC1GLS0,7	;Set !TK0 low
+	bsf	CLC2GLS0,6	;Set SIDES high
+	bcf	CLC2GLS2,6	;Set !DRVIN low
+	bcf	CLC2GLS2,7	;Set PRESENT/!HD low
+	bsf	FLAGS,NDIRTN	;Set !DIRTN high
+	bsf	FLAGS,SUPRDRV	;Set SUPERDRIVE high
+	clrf	TRACK		;Select track zero
 	bra	WaitCommand	;Done
 
 InsertDiskHdRo
-InsertDiskDdRo
-	movlb	30		;Set signals for read-only disk:
-	bcf	CLC1GLS0,7	;Set !CSTIN low
-	bcf	CLC1GLS2,7	;Set !WRPROT low
+InsertDiskHdRw
+InsertDiskEject
+	movlb	30		;Set signals for HD disk (or no disk):
+	btfsc	FLAGS,SUPRDRV	;If SUPERDRIVE is high, set PRESENT/!HD low,
+	bcf	CLC2GLS2,7	; else leave it alone
 	bra	WaitCommand	;Done
 
-InsertDiskHdRw
+InsertDiskDdRo
 InsertDiskDdRw
-	movlb	30		;Set signals for read-write disk:
-	bcf	CLC1GLS0,7	;Set !CSTIN low
-	bsf	CLC1GLS2,7	;Set !WRPROT high
+	movlb	30		;Set signals for DD disk:
+	btfsc	FLAGS,SUPRDRV	;If SUPERDRIVE is high, set PRESENT/!HD high,
+	bsf	CLC2GLS2,7	; else leave it alone
 	bra	WaitCommand	;Done
 
 DataModeAutoGcr
@@ -590,8 +610,8 @@ DataModeAutoMfm
 	;fall through		;Sink data while relaying state of SEL
 
 DataModeSink
-	movlb	30		;Set !STEP high
-	bsf	CLC1GLS2,6	; "
+	movlb	30		;Set !READY low
+	bcf	CLC2GLS0,7	; "
 	movlb	0		;Signal the current state of SEL and look for
 	btfsc	SEL_PORT,SEL_PIN; changes
 	bra	DMSink3		; "
@@ -627,6 +647,32 @@ DMSink5	movf	RCREG,W		;Framing error, so check what byte was received
 	btfsc	STATUS,Z	;If it was a zero, this was a break character,
 	bra	WaitCommand	; so return to await a command byte, otherwise
 	bra	DMSink4		; loop to wait for the next data byte
+
+
+;;; Lookup Tables ;;;
+
+	org	0x380
+
+;LUT for converting IWM bytes to GCR nibbles.  Valid bytes resolve to nibble
+; with bits 6 and bit 7 clear, invalid bytes are unchanged from IWM (i.e. bit 7
+; is set).
+IwmToNibble
+	dt	0x80,0x81,0x82,0x83,0x84,0x85,0x86,0x87
+	dt	0x88,0x89,0x8A,0x8B,0x8C,0x8D,0x8E,0x8F
+	dt	0x90,0x91,0x92,0x93,0x94,0x95,0x00,0x01
+	dt	0x98,0x99,0x02,0x03,0x9C,0x04,0x05,0x06
+	dt	0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0x07,0x08
+	dt	0xA8,0xA9,0xAA,0x09,0x0A,0x0B,0x0C,0x0D
+	dt	0xB0,0xB1,0x0E,0x0F,0x10,0x11,0x12,0x13
+	dt	0xB8,0x14,0x15,0x16,0x17,0x18,0x19,0x1A
+	dt	0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7
+	dt	0xC8,0xC9,0xCA,0x1B,0xCC,0x1C,0x1D,0x1E
+	dt	0xD0,0xD1,0xD2,0x1F,0xD4,0xD5,0x20,0x21
+	dt	0xD8,0x22,0x23,0x24,0x25,0x26,0x27,0x28
+	dt	0xE0,0xE1,0xE2,0xE3,0xE4,0x29,0x2A,0x2B
+	dt	0xE8,0x2C,0x2D,0x2E,0x2F,0x30,0x31,0x32
+	dt	0xF0,0xF1,0x33,0x34,0x35,0x36,0x37,0x38
+	dt	0xF8,0x39,0x3A,0x3B,0x3C,0x3D,0x3E,0x3F
 
 
 ;;; MFM Receiver ;;;
@@ -1647,6 +1693,15 @@ RecvMfm7_01
 	goto	RecvMfmRestart	;Too long between transitions, lose sync
 
 
+;;; Lookup Tables ;;;
+
+	org	0x7C0
+
+;LUT for converting raw read from command port into command
+PortToCmd
+	#include	receiver_lut.inc	;Generated by pinout.py
+
+
 ;;; GCR Floppy State Machine ;;;
 
 	org	0x800
@@ -1752,8 +1807,8 @@ GFSA962	movlw	175		;06 Load the counter for the 174 trios plus a
 	retlw	low GFSDataSec	;11-12
 
 GFSAddrMark
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X0		;08 Save it for later
 	clrf	FSR0L		;09 Prepare to receive new byte's bits
 	nop			;10
@@ -1779,8 +1834,8 @@ GFSAM1	movf	X0,W		;06 Take the nibble representation of the byte
 	return			;11-12
 
 GFSDataSec
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X0		;08 Save it for later
 	clrf	FSR0L		;09 Prepare to receive new byte's bits
 	nop			;10
@@ -1801,8 +1856,8 @@ GFSDS0	movf	X0,W		;06 Take the nibble representation of the byte
 	retlw	low GFSDataBits	;11-12
 
 GFSDataBits
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X2		;08 Save it for later
 	movwf	X0		;09 Here too in case it's not a valid nibble
 	clrf	FSR0L		;10 Prepare to receive new byte's bits
@@ -1822,8 +1877,8 @@ GFSDBi0	DNOP			;06-07
 	retlw	low GFSDataA	;11-12
 
 GFSDataA
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X0		;08 Save it for later
 	clrf	FSR0L		;09 Prepare to receive new byte's bits
 	nop			;10
@@ -1846,8 +1901,8 @@ GFSDA0	btfsc	X2,5		;06 Reinsert high bits into completed byte
 	retlw	low GFSDataB	;11-12
 
 GFSDataB
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X0		;08 Save it for later
 	clrf	FSR0L		;09 Prepare to receive new byte's bits
 	nop			;10
@@ -1871,8 +1926,8 @@ GFSDB0	btfsc	X2,3		;06 Reinsert high bits into completed byte
 	return			;11-12
 
 GFSDataC
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X0		;08 Save it for later
 	clrf	FSR0L		;09 Prepare to receive new byte's bits
 	nop			;10
@@ -1896,8 +1951,8 @@ GFSDC0	btfsc	X2,1		;06 Reinsert high bits into completed byte
 	return			;11-12
 
 GFSDataBits2
-	nop			;05
-	movf	INDF0,W		;06-07 Take nibble representation of last byte
+	bsf	FSR0L,7		;05 Take nibble representation of last byte
+	movf	INDF0,W		;06-07  "
 	movwf	X2		;08 Save it for later
 	movwf	X0		;09 Here too in case it's not a valid nibble
 	clrf	FSR0L		;10 Prepare to receive new byte's bits
@@ -3397,36 +3452,10 @@ GRRRis2	bsf	INTCON,GIE	;011 cycles, 0.67 bit times
 	bra	GRRRis1		;026-027 cycles, 1.59-1.65 bit times
 
 
-;;; Lookup Tables ;;;
+;;; Bootloader ;;;
 
 	org	0xF00
-
-;LUT for converting IWM bytes to GCR nibbles.  Valid bytes resolve to nibble
-; with bits 6 and bit 7 clear, invalid bytes are unchanged from IWM (i.e. bit 7
-; is set).
-IwmToNibble
-	dt	0x80,0x81,0x82,0x83,0x84,0x85,0x86,0x87
-	dt	0x88,0x89,0x8A,0x8B,0x8C,0x8D,0x8E,0x8F
-	dt	0x90,0x91,0x92,0x93,0x94,0x95,0x00,0x01
-	dt	0x98,0x99,0x02,0x03,0x9C,0x04,0x05,0x06
-	dt	0xA0,0xA1,0xA2,0xA3,0xA4,0xA5,0x07,0x08
-	dt	0xA8,0xA9,0xAA,0x09,0x0A,0x0B,0x0C,0x0D
-	dt	0xB0,0xB1,0x0E,0x0F,0x10,0x11,0x12,0x13
-	dt	0xB8,0x14,0x15,0x16,0x17,0x18,0x19,0x1A
-	dt	0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7
-	dt	0xC8,0xC9,0xCA,0x1B,0xCC,0x1C,0x1D,0x1E
-	dt	0xD0,0xD1,0xD2,0x1F,0xD4,0xD5,0x20,0x21
-	dt	0xD8,0x22,0x23,0x24,0x25,0x26,0x27,0x28
-	dt	0xE0,0xE1,0xE2,0xE3,0xE4,0x29,0x2A,0x2B
-	dt	0xE8,0x2C,0x2D,0x2E,0x2F,0x30,0x31,0x32
-	dt	0xF0,0xF1,0x33,0x34,0x35,0x36,0x37,0x38
-	dt	0xF8,0x39,0x3A,0x3B,0x3C,0x3D,0x3E,0x3F
-
-	org	0xFC0
-
-;LUT for converting raw read from command port into command
-PortToCmd
-	#include	receiver_lut.inc	;Generated by pinout.py
+	;TODO
 
 
 ;;; End of Program ;;;

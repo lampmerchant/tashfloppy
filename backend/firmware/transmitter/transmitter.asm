@@ -59,7 +59,7 @@ DNOP	macro
 ;;; Constants ;;;
 
 ;FLAGS:
-NDIRTN	equ	7	;Set when track number decreases on step (toward rim)
+HIGHDEN	equ	7	;Set if inserted disk is high-density
 LASTLSB	equ	6	;Set if last MFM byte had LSb set
 MFMLIT	equ	5	;Set if MFM byte is to be interpreted literally
 
@@ -129,7 +129,7 @@ IntNwrreq
 	btfsc	NEN_PORT,NEN_PIN; us, so return
 	return			; "
 	movlb	30		;If MFMMODE is not high, we don't need to do
-	btfss	CLC1GLS2,7	; anything
+	btfss	CLC2GLS2,7	; anything
 	return			; "
 	movlb	0		;If !WRREQ is now low, skip ahead
 	btfss	NWQ_PORT,NWQ_PIN; "
@@ -139,9 +139,9 @@ IntNwrreq
 IntNwrreqRising
 	movlb	30		;Set output of CLC1 when CA0 is low to be
 	movlw	B'10010';SDO	; determined by SSP
-	movwf	CLC1SEL0	; "
+	movwf	CLC2SEL0	; "
 	movlw	B'00000101'	; "
-	movwf	CLC1GLS0	; "
+	movwf	CLC2GLS0	; "
 	movlb	0		;Reset and stop Timer2
 	bcf	T2CON,TMR2ON	; "
 	clrf	TMR2		; "
@@ -151,9 +151,9 @@ IntNwrreqRising
 IntNwrreqFalling
 	movlb	30		;Set output of CLC1 when CA0 is low to be
 	movlw	B'01100';CCP1	; determined by CCP1
-	movwf	CLC1SEL0	; "
+	movwf	CLC2SEL0	; "
 	movlw	B'00000010'	; "
-	movwf	CLC1GLS0	; "
+	movwf	CLC2GLS0	; "
 	movlw	4		;Set the index pulse countdown to 20 ms, that's
 	movwf	INDXCNT		; soon but well beyond a single sector's write
 	movlb	0		;Reset and start Timer2
@@ -188,12 +188,12 @@ IntCa3
 	return			;1   1   1   1   none
 
 IntCa3DirtnLow
-	bcf	FLAGS,NDIRTN	;Set internal !DIRTN flag low
+	bcf	CLC1GLS0,6	;Set !DIRTN low
 	return			;Done
 
 IntCa3Step
-	bsf	CLC2GLS0,7	;Set !READY high
-	btfsc	FLAGS,NDIRTN	;If !DIRTN is high (decrement track, toward
+	bcf	CLC1GLS2,6	;Set !STEP low
+	btfsc	CLC1GLS0,6	;If !DIRTN is high (decrement track, toward
 	bra	ICStep0		; rim), skip ahead
 	incf	TRACK,F		;Increment track
 	movf	TRACK,W		;If we hit track 80, go back to 79
@@ -207,20 +207,20 @@ ICStep0	movf	TRACK,W		;If track is not already 0, decrement it
 	return			;Done
 
 IntCa3MfmMode
-	bsf	CLC1GLS2,7	;Set MFMMODE high
+	bsf	CLC2GLS2,7	;Set MFMMODE high
 	return			;Done
 
 IntCa3DirtnHigh
-	bsf	FLAGS,NDIRTN	;Set internal !DIRTN flag high
+	bsf	CLC1GLS0,6	;Set !DIRTN high
 	return			;Done
 
 IntCa3GcrMode
-	bcf	CLC1GLS2,7	;Set MFMMODE low
+	bcf	CLC2GLS2,7	;Set MFMMODE low
 	return			;Done
 
 IntCa3Eject
-	btfsc	CLC1GLS2,6	;If SUPERDRIVE is high, set PRESENT/!HD low
-	bcf	CLC2GLS2,7	; "
+	bsf	CLC1GLS0,7	;Set !CSTIN high
+	bcf	CLC1GLS2,7	;Set !WRPROT low
 	return			;Done
 
 IntIndex
@@ -238,7 +238,7 @@ IntIndex
 	movwf	CCP1CON		; "
 	movlb	30		;Set the index pulse countdown to measure 200 ms
 	movlw	40		; (300 RPM) for a high density disk and 100 ms
-	btfsc	CLC2GLS2,7	; (600 RPM) for a double density disk
+	btfss	FLAGS,HIGHDEN	; (600 RPM) for a double density disk
 	movlw	20		; "
 	movwf	INDXCNT		; "
 	return			;Done
@@ -267,43 +267,43 @@ Init
 	movwf	SSPCON1		; on rising edge, data sampled on rising edge
 	clrf	SSP1STAT	; (CKP=0, CKE=0, SMP=0)
 
-	banksel	CLC1CON		;CLC1 in RDDATA mode (when !WRREQ is high or
-	movlw	B'10010';SDO	; MFMMODE is low):
-	movwf	CLC1SEL0	;If CLCIN2 (CA0) is low, output is SDO NAND SCK
-	movlw	B'10000';SCK	;If CLCIN2 (CA0) is high, output is:
-	movwf	CLC1SEL1	; SUPERDRIVE  MFMMODE    Output   CLC1GLS2
-	movlw	B'00010';CLCIN2	; (SEL low)   (SEL high)
-	movwf	CLC1SEL2; (CA0)	; 0           0          0        00000000 (def)
-	movlw	B'00011';CLCIN3	; 0           1          SEL      10000000
-	movwf	CLC1SEL3; (SEL)	; 1           0          NOT SEL  01000000
-	movlw	B'00000101'	; 1           1          1        11000000
-	movwf	CLC1GLS0
-	movlw	B'00010000'	;CLC1 in INDEX mode (when !WRREQ is low and
-	movwf	CLC1GLS1	; MFMMODE is high):
-	clrf	CLC1GLS2	;If CLCIN2 (CA0) is low, output is CLCIN0 (CCP1
-	movlw	B'00100000'	; from tachometer)
-	movwf	CLC1GLS3	;If CLCIN2 (CA0) is high, output is as above
-	clrf	CLC1POL
-	movlw	B'10000000'
-	movwf	CLC1CON		;CLC2:
+	banksel	CLC1CON		;CLC1:
 	movlw	B'00010';CLCIN2	;If CLCIN2 (CA0) is low, output is:
-	movwf	CLC2SEL2; (CA0)	; SIDES      !READY      Output   CLC2GLS0
+	movwf	CLC1SEL2; (CA0)	; !DIRTN     !CSTIN      Output   CLC1GLS0
 	movlw	B'00011';CLCIN3	; (SEL low)  (SEL high)
-	movwf	CLC2SEL3; (SEL)	; 0          0           0        00000000
+	movwf	CLC1SEL3; (SEL)	; 0          0           0        00000000
 	movlw	B'11000000'	; 0          1           SEL      10000000
-	movwf	CLC2GLS0	; 1          0           NOT SEL  01000000
+	movwf	CLC1GLS0	; 1          0           NOT SEL  01000000
 	movlw	B'00010000'	; 1          1           1        11000000 (def)
-	movwf	CLC2GLS1	;If CLCIN2 (CA0) is high, output is:
-	movlw	B'11000000'	; !DRVIN     PRESENT/!HD Output   CLC2GLS2
-	movwf	CLC2GLS2	; (SEL low)  (SEL high)
+	movwf	CLC1GLS1	;If CLCIN2 (CA0) is high, output is:
+	movlw	B'11000000'	; !STEP      !WRPROT     Output   CLC1GLS2
+	movwf	CLC1GLS2	; (SEL low)  (SEL high)
 	movlw	B'00100000'	; 0          0           0        00000000
-	movwf	CLC2GLS3	; 0          1           SEL      10000000
-	clrf	CLC2POL		; 1          0           NOT SEL  01000000
+	movwf	CLC1GLS3	; 0          1           SEL      10000000
+	clrf	CLC1POL		; 1          0           NOT SEL  01000000
 	movlw	B'10000000'	; 1          1           1        11000000 (def)
+	movwf	CLC1CON
+	movlw	B'10010';SDO	;CLC2 in RDDATA mode (when !WRREQ is high or
+	movwf	CLC2SEL0	; MFMMODE is low):
+	movlw	B'10000';SCK	;If CLCIN2 (CA0) is low, output is SDO NAND SCK
+	movwf	CLC2SEL1	;If CLCIN2 (CA0) is high, output is:
+	movlw	B'00010';CLCIN2	; SUPERDRIVE  MFMMODE    Output   CLC2GLS2
+	movwf	CLC2SEL2; (CA0)	; (SEL low)   (SEL high)
+	movlw	B'00011';CLCIN3	; 0           0          0        00000000 (def)
+	movwf	CLC2SEL3; (SEL)	; 0           1          SEL      10000000
+	movlw	B'00000101'	; 1           0          NOT SEL  01000000
+	movwf	CLC2GLS0	; 1           1          1        11000000
+	movlw	B'00010000'
+	movwf	CLC2GLS1	;CLC2 in INDEX mode (when !WRREQ is low and
+	clrf	CLC2GLS2	; MFMMODE is high):
+	movlw	B'00100000'	;If CLCIN2 (CA0) is low, output is CLCIN0 (CCP1
+	movwf	CLC2GLS3	; from tachometer) TODO is it??
+	clrf	CLC2POL		;If CLCIN2 (CA0) is high, output is as above
+	movlw	B'10000000'
 	movwf	CLC2CON
 	movlw	B'00001';CLCIN1	;CLC3:
-	movwf	CLC3SEL1; (CA1)	;If CLCIN1 (CA1) is low, output is LC1OUT
-	movlw	B'00100';LC1OUT	;If CLCIN1 (CA1) is high, output is LC2OUT
+	movwf	CLC3SEL1; (CA2)	;If CLCIN1 (CA2) is low, output is LC1OUT
+	movlw	B'00100';LC1OUT	;If CLCIN1 (CA2) is high, output is LC2OUT
 	movwf	CLC3SEL2
 	movlw	B'00101';LC2OUT
 	movwf	CLC3SEL3
@@ -364,12 +364,12 @@ Init
 
 	banksel	RA0PPS		;Set up PPS outputs
 	movlw	B'00110';LC3OUT
-	movwf	CTD_PPS
+	movwf	CTM_PPS
 	movlw	B'01100';CCP1
-	movwf	TTD_PPS
+	movwf	TTM_PPS
 
 	banksel	CKPPS		;Set up PPS inputs
-	movlw	CA1_PPSI
+	movlw	CA2_PPSI
 	movwf	CLCIN1PPS
 	movlw	CA0_PPSI
 	movwf	CLCIN2PPS
@@ -377,16 +377,16 @@ Init
 	movwf	CLCIN3PPS
 	movlw	RX_PPSI
 	movwf	RXPPS
-	movlw	TTD_PPSI
+	movlw	TTM_PPSI
 	movwf	CCP1PPS
 
 	banksel	LATA		;CTS high (unasserted) so host waits to send
 	bsf	CTS_PORT,CTS_PIN
 
 	banksel	TRISA		;LC3OUT, CTS, CCP1 outputs, all others inputs
-	bcf	CTD_PORT,CTD_PIN
+	bcf	CTM_PORT,CTM_PIN
 	bcf	CTS_PORT,CTS_PIN
-	bcf	TTD_PORT,TTD_PIN
+	bcf	TTM_PORT,TTM_PIN
 
 	banksel	PIE1		;Timer2 interrupt enabled
 	movlw	1 << TMR2IE
@@ -452,8 +452,8 @@ HwConfig
 	andlw	B'00001111'	; command byte
 	brw			; "
 	bra	HwConfigNoDrive	;0xC0 - no drive
-	bra	HwConfig400k	;0xC1 - 400k drive
-	bra	HwConfig800k	;0xC2 - 800k drive
+	bra	HwConfig400k	;0xC1 - 400 kB drive
+	bra	HwConfig800k	;0xC2 - 800 kB drive
 	bra	HwConfigSuper	;0xC3 - superdrive
 	bra	WaitCommand	;0xC4 - invalid
 	bra	WaitCommand	;0xC5 - invalid
@@ -512,60 +512,70 @@ DataMode
 
 HwConfigNoDrive
 	movlb	30		;Set signals for no drive:
-	bsf	CLC2GLS2,6	;Set !DRVIN high
-	bcf	CLC1GLS2,6	;Set SUPERDRIVE low
-	bcf	CLC1GLS2,7	;Set MFMMODE low
-	bsf	CLC2GLS0,6	;Set SIDES high
-	bsf	CLC2GLS2,7	;Set PRESENT/!HD high
-	bsf	FLAGS,NDIRTN	;Set !DIRTN high
+	bsf	CLC1GLS0,6	;Set !DIRTN high
+	bsf	CLC1GLS0,7	;Set !CSTIN high
+	bsf	CLC1GLS2,6	;Set !STEP high
+	bsf	CLC1GLS2,7	;Set !WRPROT low
+	bcf	CLC2GLS2,6	;Set SUPERDRIVE low
+	bcf	CLC2GLS2,7	;Set MFMMODE low
 	bra	WaitCommand	;Done
 
 HwConfig400k
-	movlb	30		;Set signals for 400k drive:
-	bcf	CLC2GLS2,6	;Set !DRVIN low
-	bcf	CLC1GLS2,6	;Set SUPERDRIVE low
-	bcf	CLC1GLS2,7	;Set MFMMODE low
-	bcf	CLC2GLS0,6	;Set SIDES low
-	bcf	CLC2GLS2,7	;Set PRESENT/!HD low
-	bsf	FLAGS,NDIRTN	;Set !DIRTN high
-	clrf	TRACK		;Select track zero
-	bra	WaitCommand	;Done
-
 HwConfig800k
-	movlb	30		;Set signals for 800k drive:
-	bcf	CLC2GLS2,6	;Set !DRVIN low
-	bcf	CLC1GLS2,6	;Set SUPERDRIVE low
-	bcf	CLC1GLS2,7	;Set MFMMODE low
-	bsf	CLC2GLS0,6	;Set SIDES high
-	bsf	CLC2GLS2,7	;Set PRESENT/!HD (actually REVISED) high
-	bsf	FLAGS,NDIRTN	;Set !DIRTN high
+	movlb	30		;Set signals for 400/800 kB drive:
+	bsf	CLC1GLS0,6	;Set !DIRTN high
+	bsf	CLC1GLS0,7	;Set !CSTIN high
+	bsf	CLC1GLS2,6	;Set !STEP high
+	bcf	CLC1GLS2,7	;Set !WRPROT low
+	bcf	CLC2GLS2,6	;Set SUPERDRIVE low
+	bcf	CLC2GLS2,7	;Set MFMMODE low
 	clrf	TRACK		;Select track zero
 	bra	WaitCommand	;Done
 
 HwConfigSuper
 	movlb	30		;Set signals for superdrive:
-	bcf	CLC2GLS2,6	;Set !DRVIN low
-	bsf	CLC1GLS2,6	;Set SUPERDRIVE high
-	bcf	CLC1GLS2,7	;Set MFMMODE low
-	bsf	CLC2GLS0,6	;Set SIDES high
-	bcf	CLC2GLS2,7	;Set PRESENT/!HD low
-	bsf	FLAGS,NDIRTN	;Set !DIRTN high
+	bsf	CLC1GLS0,6	;Set !DIRTN high
+	bsf	CLC1GLS0,7	;Set !CSTIN high
+	bsf	CLC1GLS2,6	;Set !STEP high
+	bcf	CLC1GLS2,7	;Set !WRPROT low
+	bsf	CLC2GLS2,6	;Set SUPERDRIVE high
+	bcf	CLC2GLS2,7	;Set MFMMODE low
 	clrf	TRACK		;Select track zero
 	bra	WaitCommand	;Done
 
-InsertDiskHdRo
-InsertDiskHdRw
 InsertDiskEject
-	movlb	30		;Set signals for HD disk (or no disk):
-	btfsc	CLC1GLS2,6	;If SUPERDRIVE is high, set PRESENT/!HD low,
-	bcf	CLC2GLS2,7	; else leave it alone
+	movlb	30		;Set signals for no disk:
+	bsf	CLC1GLS0,7	;Set !CSTIN high
+	bcf	CLC1GLS2,7	;Set !WRPROT low
+	bcf	FLAGS,HIGHDEN	;Clear high-density flag
 	bra	WaitCommand	;Done
 
+InsertDiskHdRo
+	movlb	30		;Set signals for read-only disk:
+	bcf	CLC1GLS0,7	;Set !CSTIN low
+	bcf	CLC1GLS2,7	;Set !WRPROT low
+	bsf	FLAGS,HIGHDEN	;Set high-density flag
+	bra	WaitCommand	;Done
+	
 InsertDiskDdRo
+	movlb	30		;Set signals for read-only disk:
+	bcf	CLC1GLS0,7	;Set !CSTIN low
+	bcf	CLC1GLS2,7	;Set !WRPROT low
+	bcf	FLAGS,HIGHDEN	;Clear high-density flag
+	bra	WaitCommand	;Done
+
+InsertDiskHdRw
+	movlb	30		;Set signals for read-write disk:
+	bcf	CLC1GLS0,7	;Set !CSTIN low
+	bsf	CLC1GLS2,7	;Set !WRPROT high
+	bsf	FLAGS,HIGHDEN	;Set high-density flag
+	bra	WaitCommand	;Done
+
 InsertDiskDdRw
-	movlb	30		;Set signals for DD disk:
-	btfsc	CLC1GLS2,6	;If SUPERDRIVE is high, set PRESENT/!HD high,
-	bsf	CLC2GLS2,7	; else leave it alone
+	movlb	30		;Set signals for read-write disk:
+	bcf	CLC1GLS0,7	;Set !CSTIN low
+	bsf	CLC1GLS2,7	;Set !WRPROT high
+	bcf	FLAGS,HIGHDEN	;Clear high-density flag
 	bra	WaitCommand	;Done
 
 DataModeAutoGcr
@@ -1145,8 +1155,8 @@ SetupForGcr
 	movwf	TACHFSL		; "
 	movlb	0		;Start Timer1 again
 	bsf	T1CON,TMR1ON	; "
-	movlb	30		;Set !READY low because step is ending
-	bcf	CLC2GLS0,7	; "
+	movlb	30		;Set !STEP high because step is ending
+	bsf	CLC1GLS2,6	; "
 	return			;Done
 StFGcr0	brw
 	retlw	high (2000000000 / (Z0RPM * (500 + RPMDEV)))
@@ -1191,8 +1201,8 @@ SetupForMfm
 	clrf	CCPR1L		; it
 	clrf	CCP1CON		; "
 	bsf	CCP1CON,3	; "
-	movlb	30		;Set !READY low because step is ending
-	bcf	CLC2GLS0,7	; "
+	movlb	30		;Set !STEP high because step is ending
+	bsf	CLC1GLS2,6	; "
 	return			;Done
 
 
