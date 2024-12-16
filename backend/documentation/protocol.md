@@ -85,7 +85,7 @@ From the initial state, the bytes `0xC2` and `0xA1` have one clock bit dropped f
 
 The byte `0xFE`, as the fourth byte in an address mark, signals that the next six bytes are to be exempt from the special casing applied to bytes by the initial state.  The byte `0xFB`, as the fourth byte in a data mark, signals that the next 514 bytes are to be exempt from the special casing applied to bytes by the initial state.
 
-The byte `0xEE` has no special meaning in MFM, but this implementation treats it as a signal that an pulse is to be sent over the INDEX line while the byte is otherwise interpreted and sent as though it were a `0x4E` 'gap' byte.
+~~The byte `0xEE` has no special meaning in MFM, but this implementation treats it as a signal that an pulse is to be sent over the INDEX line while the byte is otherwise interpreted and sent as though it were a `0x4E` 'gap' byte.~~
 
 When this command is initially received, the backend will wait for the first data byte before beginning to transmit.  Thereafter, because sync must be maintained, the frontend must keep the queue from emptying.  If the queue does empty, the backend will cease to transmit and refuse to start again until it receives a break character and another Enter Data Mode command.
 
