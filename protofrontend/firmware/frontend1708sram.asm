@@ -310,10 +310,6 @@ Init
 	movlw	0xC0
 	movwf	UR_QPSH
 	movwf	UR_QPOP
-	clrf	X4
-	movlw	0x20
-	movwf	FSR1H
-	clrf	FSR1L
 
 	banksel	OSCSTAT		;Spin until PLL is ready and instruction clock
 	btfss	OSCSTAT,PLLR	; gears up to 8 MHz
@@ -1788,19 +1784,10 @@ MfmWriAdrCrc2
 	bra	$		; TODO can we do something better than this?
 	decf	X0,W		;CRC matches, so accept the sector number we
 	movwf	SECTOR		; were given (adjust so it's zero-relative)
-	call	STrace
 	goto	MfmWriStart	;Wait for next write
 
 
 ;;; Specific Subprograms ;;;
-
-STrace
-	movf	SECTOR,W
-	movwi	FSR1++
-	btfsc	FSR1H,0
-	incf	X4,F
-	bcf	FSR1H,0
-	return
 
 ;Read in 16-bit 256-byte block address from UART and clock out command (given in
 ; W) followed by byte address to SPI SRAM.  Clobbers X2, X1, X0.

@@ -59,6 +59,17 @@ DNOP	macro
 ;;; Constants ;;;
 
 ;FLAGS:
+NDIRTN	equ	7	;Set when track number decreases on step (toward rim)
+HIGHDEN	equ	6	;Set if inserted disk is high-density
+
+;GCR tachometer parameters:
+TACHFCV	equ	156	;Feathering period, in units of 4.096 ms
+RPMDEV	equ	1	;Feathering deviation, in units of 0.4%
+Z0RPM	equ	394	;RPM in speed zone 0 (tracks 0-15)
+Z1RPM	equ	429	;RPM in speed zone 1 (tracks 16-31)
+Z2RPM	equ	472	;RPM in speed zone 2 (tracks 32-47)
+Z3RPM	equ	525	;RPM in speed zone 3 (tracks 48-63)
+Z4RPM	equ	590	;RPM in speed zone 4 (tracks 64-79)
 
 
 ;;; Variable Storage ;;;
@@ -66,12 +77,12 @@ DNOP	macro
 	cblock	0x70	;Bank-common registers
 	
 	FLAGS	;You've got to have flags
-	X14
-	X13
-	X12
-	X11
-	X10
-	X9
+	TRACK	;Current track where head is placed
+	TACHFSH	;Tachometer feather swap value; swapped with CCP register value
+	TACHFSL	; at intervals
+	TACHFCH	;Tachometer feather count-up timer; when over limit, it swaps
+	TACHFCL	; the CCP register with TACHFSH:L
+	INDXCNT	;Countdown of 5 ms periods to index pulse
 	X8
 	X7
 	X6
@@ -80,7 +91,7 @@ DNOP	macro
 	X3
 	X2
 	X1
-	X0
+	X0	;Various purposes
 	
 	endc
 
@@ -98,6 +109,7 @@ DNOP	macro
 ;;; Interrupt Handler ;;;
 
 Interrupt
+	;TODO replace call/return with label/bra
 	movlb	0		;Grab the command port as early as possible in
 	movf	CMD_PORT,W	; case CA3 was pulsed
 	movlb	7		;If CA3 was pulsed, handle it
@@ -105,22 +117,22 @@ Interrupt
 	call	IntCa3		; "
 	movlb	7		;If !ENBL changed state, handle it
 	btfsc	NEN_IOCF,NEN_PIN; "
-	call	IntNEnbl	; "
+	call	IntNenbl	; "
 	retfie			;Done
 
-IntNEnbl
+IntNenbl
 	bcf	NEN_IOCF,NEN_PIN;Clear the interrupt
 	movlb	0		;If !ENBL is now low, skip ahead
 	btfss	NEN_PORT,NEN_PIN; "
-	bra	IntNEnblFalling	; "
+	bra	IntNenblFalling	; "
 	;fall through		;Else fall through
 
-IntNEnblRising
+IntNenblRising
 	movlb	1		;Tristate RD pin
 	bsf	RD_PORT,RD_PIN	; "
 	return			;Done
 
-IntNEnblFalling
+IntNenblFalling
 	movlb	1		;Drive RD pin
 	bcf	RD_PORT,RD_PIN	; "
 	return			;Done
@@ -133,15 +145,15 @@ IntCa3
 	callw			;Translate the command port read into a command
 	movlb	30		;Switch to CLC bank, common need among commands
 	brw			;CA2 CA1 CA0 SEL Effect
-	return			;0   0   0   0   Set !DIRTN low (ignore)
+	bra	IntCa3DirtnLow	;0   0   0   0   Set !DIRTN low
 	return			;0   0   0   1   none
-	return			;0   0   1   0   Step drive heads (ignore)
+	bra	IntCa3Step	;0   0   1   0   Step drive heads
 	return			;0   0   1   1   Select MFM mode (ignore)
 	return			;0   1   0   0   Turn motor on (ignore)
 	return			;0   1   0   1   none
 	return			;0   1   1   0   none
 	return			;0   1   1   1   none
-	return			;1   0   0   0   Set !DIRTN high (ignore)
+	bra	IntCa3DirtnHigh	;1   0   0   0   Set !DIRTN high
 	bra	IntCa3Switched	;1   0   0   1   Reset SWITCHED to low
 	return			;1   0   1   0   none
 	return			;1   0   1   1   Select GCR mode (ignore)
@@ -149,6 +161,28 @@ IntCa3
 	return			;1   1   0   1   none
 	bra	IntCa3Eject	;1   1   1   0   Eject disk
 	return			;1   1   1   1   none
+
+IntCa3DirtnLow
+	bcf	FLAGS,NDIRTN	;Set internal !DIRTN flag low
+	return			;Done
+
+IntCa3Step
+	btfsc	FLAGS,NDIRTN	;If !DIRTN is high (decrement track, toward
+	bra	ICStep0		; rim), skip ahead
+	incf	TRACK,F		;Increment track
+	movf	TRACK,W		;If we hit track 80, go back to 79
+	xorlw	80		; "
+	btfsc	STATUS,Z	; "
+	decf	TRACK,F		; "
+	return			;Done
+ICStep0	movf	TRACK,W		;If track is not already 0, decrement it
+	btfss	STATUS,Z	; "
+	decf	TRACK,F		; "
+	return			;Done
+
+IntCa3DirtnHigh
+	bsf	FLAGS,NDIRTN	;Set internal !DIRTN flag high
+	return			;Done
 
 IntCa3Switched
 	bcf	CLC3GLS0,7	;Set SWITCHED low
@@ -182,9 +216,9 @@ Init
 	banksel	CLC1CON		;CLC1:
 	clrf	CLC1SEL0;CLCIN0	;If CLCIN0 (CA1) is low, output is LC3OUT from
 	movlw	B'00010';CLCIN2	; transmitter
-	movwf	CLC1SEL2; (CFR)	;If CLCIN0 (CA1) is high, output is LC3OUT from
+	movwf	CLC1SEL2; (FRX)	;If CLCIN0 (CA1) is high, output is LC3OUT from
 	movlw	B'00011';CLCIN3	; receiver
-	movwf	CLC1SEL3; (CFT)
+	movwf	CLC1SEL3; (FTX)
 	movlw	B'00100000'
 	movwf	CLC1GLS0
 	movlw	B'00000001'
@@ -198,9 +232,9 @@ Init
 	movwf	CLC1CON
 	movlw	B'00001';CLCIN1	;CLC3:
 	movwf	CLC3SEL0; (SEL)	;If CLCIN1 (SEL) is low, output is CLC3GLS0[7:6]
-	movlw	B'01010';COG1A	; (SWITCHED)
-	movwf	CLC3SEL1; (TFT)	;If CLCIN1 (SEL) is high, output is COG1A
-	movlw	B'11000000'	; (TACH/!INDEX from transmitter)
+	movlw	B'01100';CCP1	; (SWITCHED)
+	movwf	CLC3SEL1	;If CLCIN1 (SEL) is high, output is CCP1 (!TACH/
+	movlw	B'11000000'	; INDEX)
 	movwf	CLC3GLS0
 	movlw	B'00000001'
 	movwf	CLC3GLS1
@@ -211,14 +245,6 @@ Init
 	clrf	CLC3POL
 	movlw	B'10000000'
 	movwf	CLC3CON
-
-	banksel	COG1CON0	;COG passes COGIN through to COG1A
-	movlw	B'00000001'
-	movwf	COG1RIS
-	movwf	COG1FIS
-	movwf	COG1STR
-	movlw	B'10001000'
-	movwf	COG1CON0
 
 	banksel	IOCAP		;CA3 interrupts on rising edge, !ENBL on either
 	bsf	CA3_IOCP,CA3_PIN
@@ -237,24 +263,27 @@ Init
 	movlw	B'00100';LC1OUT
 	movwf	RD_PPS
 	movlw	B'00110';LC3OUT
-	movwf	CTR_PPS
+	movwf	TRX_PPS
+	movlw	B'01100';CCP1
+	movwf	TTX_PPS
 
 	banksel	CKPPS		;Set up PPS inputs
 	movlw	CA1_PPSI
 	movwf	CLCIN0PPS
 	movlw	SEL_PPSI
 	movwf	CLCIN1PPS
-	movlw	CFT_PPSI
+	movlw	FTX_PPSI
 	movwf	CLCIN2PPS
-	movlw	CFR_PPSI
+	movlw	FRX_PPSI
 	movwf	CLCIN3PPS
-	movlw	TFT_PPSI
-	movwf	COGINPPS
+	movlw	TTX_PIN
+	movwf	CCP1PPS
 	movlw	RX_PPSI
 	movwf	RXPPS
 
-	banksel	TRISA		;LC3OUT output, LC1OUT output sometimes but not
-	bcf	CTR_PORT,CTR_PIN; yet, all others inputs
+	banksel	TRISA		;CCP1 and LC3OUT output, LC1OUT output sometimes
+	bcf	TRX_PORT,TRX_PIN; but not yet, all others inputs
+	bcf	TTX_PORT,TTX_PIN
 
 	movlp	high PortToCmd	;Initialize key globals
 
@@ -346,11 +375,11 @@ DataMode
 	movf	X0,W		;Switch off based on the low nibble of the
 	andlw	B'00001111'	; command byte
 	brw			; "
-	bra	DataModeSink	;0xE0 - auto GCR
-	bra	DataModeSink	;0xE1 - raw GCR with random noise
+	bra	DataModeGcr	;0xE0 - auto GCR
+	bra	DataModeGcr	;0xE1 - raw GCR with random noise
 	bra	WaitCommand	;0xE2 - invalid
 	bra	WaitCommand	;0xE3 - invalid
-	bra	DataModeSink	;0xE4 - auto MFM
+	bra	DataModeMfm	;0xE4 - auto MFM
 	bra	WaitCommand	;0xE5 - invalid
 	bra	WaitCommand	;0xE6 - invalid
 	bra	WaitCommand	;0xE7 - invalid
@@ -364,29 +393,207 @@ DataMode
 	bra	WaitCommand	;0xEF - invalid
 
 HwConfigDrive
-InsertDiskEject
+	movlb	30		;Set SWITCHED high
+	bsf	CLC3GLS0,7	; "
+	bsf	CLC3GLS0,6	; "
+	clrf	TRACK		;Select track zero
+	bra	WaitCommand	;Done
+
 InsertDiskHdRo
 InsertDiskHdRw
+	movlb	30		;Set SWITCHED high
+	bsf	CLC3GLS0,7	; "
+	bsf	CLC3GLS0,6	; "
+	bsf	FLAGS,HIGHDEN	;Set high-density flag
+	bra	WaitCommand	;Done
+
+InsertDiskEject
 InsertDiskDdRo
 InsertDiskDdRw
 	movlb	30		;Set SWITCHED high
 	bsf	CLC3GLS0,7	; "
 	bsf	CLC3GLS0,6	; "
+	bcf	FLAGS,HIGHDEN	;Clear high-density flag
 	bra	WaitCommand	;Done
 
-DataModeSink
+DataModeGcr
+	call	SetupForGcr	;Set up for GCR
+DMGcr0	call	ServiceTach	;Service (feather) the tach signal
 	movlb	0		;If a byte hasn't come in over the UART yet,
 	btfss	PIR1,RCIF	; loop
-	bra	DataModeSink	; "
+	bra	DMGcr0		; "
 	movlb	3		;If there was a framing error (or break
 	btfsc	RCSTA,FERR	; character), skip ahead
-	bra	DMSink0		; "
+	bra	DMGcr1		; "
 	movf	RCREG,W		;Otherwise, read the byte to clear the
-	bra	DataModeSink	; interrupt, and loop
-DMSink0	movf	RCREG,W		;Framing error, so check what byte was received
+	bra	DMGcr0		; interrupt, and loop
+DMGcr1	movf	RCREG,W		;Framing error, so check what byte was received
 	btfsc	STATUS,Z	;If it was a zero, this was a break character,
 	bra	WaitCommand	; so return to await a command byte, otherwise
-	bra	DataModeSink	; loop to wait for the next data byte
+	bra	DMGcr0		; loop to wait for the next data byte
+
+DataModeMfm
+	call	SetupForMfm	;Set up for MFM
+DMMfm0	call	ServiceIndex	;Service the index signal
+	movlb	0		;If a byte hasn't come in over the UART yet,
+	btfss	PIR1,RCIF	; loop
+	bra	DMMfm0		; "
+	movlb	3		;If there was a framing error (or break
+	btfsc	RCSTA,FERR	; character), skip ahead
+	bra	DMMfm1		; "
+	movf	RCREG,W		;Otherwise, read the byte to clear the
+	bra	DMMfm0		; interrupt, and loop
+DMMfm1	movf	RCREG,W		;Framing error, so check what byte was received
+	btfsc	STATUS,Z	;If it was a zero, this was a break character,
+	bra	WaitCommand	; so return to await a command byte, otherwise
+	bra	DMMfm0		; loop to wait for the next data byte
+
+
+;;; Subprograms ;;;
+
+SetupForGcr
+	movlb	0		;Stop and clear Timer1 so we don't have any
+	clrf	T1CON		; unexpected inverts or resets
+	clrf	TMR1H		; "
+	clrf	TMR1L		; "
+	movlw	B'00111111'	;Timer2 ticks 1:64 with instruction clock,
+	movwf	T2CON		; period and postscaler set so it interrupts
+	movlw	63		; once every 4.096 ms
+	movwf	PR2		; "
+	clrf	TMR2		;Reset Timer2
+	bcf	PIR1,TMR2IF	; "
+	movlb	5		;Set CCP1 to invert its output whenever Timer1
+	clrf	CCPR1H		; equals 0x0001 (right after it resets)
+	movlw	1		; TODO can it be zero??
+	movwf	CCPR1L		; "
+	clrf	CCP1CON		; "
+	movlw	B'00000010'	; "
+	movwf	CCP1CON		; "
+	swapf	TRACK,W		;Set CCP2 to reset Timer1 at a point appropriate
+	andlw	B'00000111'	; to the drive rotation speed we want to imitate
+	call	StFGcr0		; based on the current track number (see LUTs
+	movwf	CCPR2H		; below and associated constants above)
+	swapf	TRACK,W		; "
+	andlw	B'00000111'	; "
+	call	StFGcr1		; "
+	movwf	CCPR2L		; "
+	clrf	CCP2CON		; "
+	movlw	B'00001011'	; "
+	movwf	CCP2CON		; "
+	swapf	TRACK,W		;Set the swap value for CCP2 in a similar manner
+	andlw	B'00000111'	; to the above
+	call	StFGcr2		; "
+	movwf	TACHFSH		; "
+	swapf	TRACK,W		; "
+	andlw	B'00000111'	; "
+	call	StFGcr3		; "
+	movwf	TACHFSL		; "
+	movlb	0		;Start Timer1 again
+	bsf	T1CON,TMR1ON	; "
+	return			;Done
+StFGcr0	brw
+	retlw	high (2000000000 / (Z0RPM * (500 + RPMDEV)))
+	retlw	high (2000000000 / (Z1RPM * (500 + RPMDEV)))
+	retlw	high (2000000000 / (Z2RPM * (500 + RPMDEV)))
+	retlw	high (2000000000 / (Z3RPM * (500 + RPMDEV)))
+	retlw	high (2000000000 / (Z4RPM * (500 + RPMDEV)))
+StFGcr1	brw
+	retlw	low (2000000000 / (Z0RPM * (500 + RPMDEV)))
+	retlw	low (2000000000 / (Z1RPM * (500 + RPMDEV)))
+	retlw	low (2000000000 / (Z2RPM * (500 + RPMDEV)))
+	retlw	low (2000000000 / (Z3RPM * (500 + RPMDEV)))
+	retlw	low (2000000000 / (Z4RPM * (500 + RPMDEV)))
+StFGcr2	brw
+	retlw	high (2000000000 / (Z0RPM * (500 - RPMDEV)))
+	retlw	high (2000000000 / (Z1RPM * (500 - RPMDEV)))
+	retlw	high (2000000000 / (Z2RPM * (500 - RPMDEV)))
+	retlw	high (2000000000 / (Z3RPM * (500 - RPMDEV)))
+	retlw	high (2000000000 / (Z4RPM * (500 - RPMDEV)))
+StFGcr3	brw
+	retlw	low (2000000000 / (Z0RPM * (500 - RPMDEV)))
+	retlw	low (2000000000 / (Z1RPM * (500 - RPMDEV)))
+	retlw	low (2000000000 / (Z2RPM * (500 - RPMDEV)))
+	retlw	low (2000000000 / (Z3RPM * (500 - RPMDEV)))
+	retlw	low (2000000000 / (Z4RPM * (500 - RPMDEV)))
+	dt	0xFF, 0xFF, 0xFF
+
+SetupForMfm
+	movlb	0		;Stop and clear Timer1 so we don't have any
+	clrf	T1CON		; unexpected inverts or resets
+	clrf	TMR1H		; "
+	clrf	TMR1L		; "
+	movlw	B'01001110'	;Timer2 ticks 1:16 with instruction clock,
+	movwf	T2CON		; period and postscaler set so it interrupts
+	movlw	250		; once every 40,000 cycles (5 ms)
+	movwf	PR2		; "
+	clrf	TMR2		;Reset Timer2
+	bcf	PIR1,TMR2IF	; "
+	movlb	5		;Turn off CCP2 so nothing resets Timer1, set up
+	clrf	CCP2CON		; CCP1 so output is low for now but its register
+	movlw	0x40		; in compare mode will trigger after 2.048 ms,
+	movwf	CCPR1H		; this allows an index pulse to be set up using
+	clrf	CCPR1L		; it
+	clrf	CCP1CON		; "
+	bsf	CCP1CON,3	; "
+	movlw	5		;Set the index pulse countdown to measure 25 ms
+	movwf	INDXCNT		; "
+	movlb	0		;Start Timer1
+	bsf	T1CON,TMR1ON	; "
+	return			;Done
+
+ServiceTach
+	movlb	0		;If the feather tick period (4.096 ms) has not
+	btfss	PIR1,TMR2IF	; yet elapsed, return
+	return			; "
+	bcf	PIR1,TMR2IF	;Clear the interrupt
+	incf	TACHFCL,F	;Increment the tachometer feather count-up timer
+	btfsc	STATUS,Z	; timer
+	incf	TACHFCH,F	; "
+	btfss	PIR1,CCP1IF	;If the tachometer signal has not recently
+	return			; inverted, return
+	bcf	PIR1,CCP1IF	;Clear the interrupt
+	movlw	TACHFCV		;If the tachometer feather count-up timer is
+	subwf	TACHFCH,W	; not yet at its limit, return
+	btfss	STATUS,C	; "
+	return			; "
+	movwf	TACHFCH		;Set feather count-up timer for next time
+	movf	TACHFSH,W	;Swap TACHFSH:L with CCPR2H:L to feather the
+	movlb	5		; tachometer signal
+	xorwf	CCPR2H,F	; "
+	xorwf	CCPR2H,W	; "
+	xorwf	CCPR2H,F	; "
+	movwf	TACHFSH		; "
+	movf	TACHFSL,W	; "
+	xorwf	CCPR2L,F	; "
+	xorwf	CCPR2L,W	; "
+	xorwf	CCPR2L,F	; "
+	movwf	TACHFSL		; "
+	return			;Done
+
+ServiceIndex
+	movlb	0		;If the tick period (5 ms) has not yet elapsed,
+	btfss	PIR1,TMR2IF	; return
+	return			; "
+	bcf	PIR1,TMR2IF	;Clear the interrupt
+	decfsz	INDXCNT,F	;Decrement the index countdown and proceed only
+	return			; when it hits zero
+	movlw	40		;Set the index pulse countdown to measure 200 ms
+	btfss	FLAGS,HIGHDEN	; (300 RPM) for a high density disk and 100 ms
+	movlw	20		; (600 RPM) for a double density disk
+	movwf	INDXCNT		; "
+	;fall through
+
+IndexPulse
+	movlb	0		;Reset and start Timer1
+	clrf	T1CON		; "
+	clrf	TMR1H		; "
+	clrf	TMR1L		; "
+	bsf	T1CON,TMR1ON	; "
+	movlb	5		;Set CCP1 to go high now and go low when 2.048
+	movlw	B'00001001'	; ms elapse, as SetupForMfm prepared
+	clrf	CCP1CON		; "
+	movwf	CCP1CON		; "
+	return			;Done
 
 
 ;;; Lookup Tables ;;;

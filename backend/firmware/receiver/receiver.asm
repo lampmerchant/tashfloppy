@@ -103,11 +103,20 @@ UPEJECT	equ	0x8E	;Eject disk
 
 ;;; Vectors ;;;
 
-	org	0x0		;Reset vector
+	org	0x000		;Reset vector
+
+	movlp	high Bootloader
+	goto	Bootloader
+
+
+	org	0x002		;Bootloader pseudo-vector
+
 	movlp	high Init
 	goto	Init
 
-	org	0x4		;Interrupt vector
+
+	org	0x004		;Interrupt vector
+
 	;fall through
 
 
@@ -311,38 +320,19 @@ IntCa3Eject
 ;;; Hardware Initialization ;;;
 
 Init
-	banksel	OSCCON		;32 MHz (w/PLL) high-freq internal oscillator
-	movlw	B'11110000'
-	movwf	OSCCON
-
-	banksel	RCSTA		;UART async mode, 1 MHz, receiver not enabled
-	movlw	B'01001000'	; just yet
-	movwf	BAUDCON
-	clrf	SPBRGH
-	movlw	7
-	movwf	SPBRGL
-	movlw	B'00100100'
-	movwf	TXSTA
-	movlw	B'10000000'
-	movwf	RCSTA
-
 	banksel	CLC1CON		;CLC1:
-	clrf	CLC1SEL1;CLCIN0	;If CLCIN2 (CA0) is low, output is:
-	movlw	B'00010';CLCIN2	; !MOTORON   !TK0        Output   CLC1GLS0
-	movwf	CLC1SEL2; (CA0)	; (SEL low)  (SEL high)
-	movlw	B'00011';CLCIN3	; 0          0           0        00000000
-	movwf	CLC1SEL3; (SEL)	; 0          1           SEL      10000000
-	movlw	B'11000000'	; 1          0           NOT SEL  01000000
-	movwf	CLC1GLS0	; 1          1           1        11000000 (def)
-	movlw	B'00010000'	;If CLCIN2 (CA0) is high, output is LC3OUT from
-	movwf	CLC1GLS1	; multiplexer (CLCIN0)
-	movlw	B'00001000'
+	movlw	B'00010';CLCIN2	;If CLCIN2 (CA0) is low, output is:
+	movwf	CLC1SEL2; (CA0)	; !MOTORON   !TK0        Output   CLC1GLS0
+	movlw	B'00011';CLCIN3	; (SEL low)  (SEL high)
+	movwf	CLC1SEL3; (SEL)	; 0          0           0        00000000
+	movlw	B'11000000'	; 0          1           SEL      10000000
+	movwf	CLC1GLS0	; 1          0           NOT SEL  01000000
+	movlw	B'00010000'	; 1          1           1        11000000 (def)
+	movwf	CLC1GLS1	;If CLCIN2 (CA0) is high, output is LC3OUT from
+	movlw	B'00001000'	; multiplexer (CLCIN0)
 	movwf	CLC1GLS2
 	movlw	B'00100000'
-	movwf	CLC1GLS3
-	clrf	CLC1POL
-	movlw	B'10000000'
-	movwf	CLC1CON		;CLC2:
+	movwf	CLC1GLS3	;CLC2:
 	movlw	B'00010';CLCIN2	;If CLCIN2 (CA0) is low, output is:
 	movwf	CLC2SEL2; (CA0)	; SIDES      !READY      Output   CLC2GLS0
 	movlw	B'00011';CLCIN3	; (SEL low)  (SEL high)
@@ -385,23 +375,11 @@ Init
 	bsf	NWQ_IOCP,NWQ_PIN
 	bsf	NWQ_IOCN,NWQ_PIN
 
-	banksel	ANSELA		;All pins digital, not analog
-	clrf	ANSELA
-	clrf	ANSELC
-
-	banksel	INLVLA		;All inputs TTL, not ST
-	clrf	INLVLA
-	clrf	INLVLC
-
 	banksel	RA0PPS		;Set up PPS outputs
 	movlw	B'00110';LC3OUT
-	movwf	CTM_PPS
-	movlw	B'10100';TX
-	movwf	TX_PPS
+	movwf	TMX_PPS
 
 	banksel	CKPPS		;Set up PPS inputs
-	movlw	CFM_PPSI
-	movwf	CLCIN0PPS
 	movlw	CA2_PPSI
 	movwf	CLCIN1PPS
 	movlw	CA0_PPSI
@@ -410,14 +388,6 @@ Init
 	movwf	CLCIN3PPS
 	movlw	NWR_PPSI
 	movwf	INTPPS
-	movlw	RX_PPSI
-	movwf	RXPPS
-	movlw	TX_PPSI
-	movwf	CKPPS
-
-	banksel	TRISA		;LC3OUT and Tx outputs, all others inputs
-	bcf	CTM_PORT,CTM_PIN
-	bcf	TX_PORT,TX_PIN
 
 	clrf	FLAGS		;Initialize key globals
 	clrf	TRACK
@@ -428,13 +398,6 @@ Init
 	movwf	FSR1L
 	movlw	high IwmToNibble
 	movwf	FSR0H
-
-	banksel	OSCSTAT		;Spin until PLL is ready and instruction clock
-	btfss	OSCSTAT,PLLR	; gears up to 8 MHz
-	bra	$-1
-
-	banksel	RCSTA		;Enable receiver now that PLL is ready
-	bsf	RCSTA,CREN
 
 	movlw	B'10001000'	;Interrupt subsystem and interrupt-on-change
 	movwf	INTCON		; interrupts on
@@ -3455,7 +3418,68 @@ GRRRis2	bsf	INTCON,GIE	;011 cycles, 0.67 bit times
 ;;; Bootloader ;;;
 
 	org	0xF00
-	;TODO
+
+Bootloader
+	banksel	OSCCON		;32 MHz (w/PLL) high-freq internal oscillator
+	movlw	B'11110000'
+	movwf	OSCCON
+
+	banksel	RCSTA		;UART async mode, 1 MHz, receiver not enabled
+	movlw	B'01001000'	; just yet
+	movwf	BAUDCON
+	clrf	SPBRGH
+	movlw	7
+	movwf	SPBRGL
+	movlw	B'00100100'
+	movwf	TXSTA
+	movlw	B'10000000'
+	movwf	RCSTA
+	clrf	TXREG
+
+	banksel	CLC1CON		;CLC1 serves as a passthrough from TRX for when
+	clrf	CLC1SEL1;CLCIN0	; receiver is not selected
+	movlw	B'00001000'
+	movwf	CLC1GLS0
+	movwf	CLC1GLS1
+	clrf	CLC1GLS2
+	clrf	CLC1GLS3
+	clrf	CLC1POL
+	movlw	B'10000000'
+	movwf	CLC1CON
+
+	banksel	ANSELA		;All pins digital, not analog
+	clrf	ANSELA
+	clrf	ANSELC
+
+	banksel	INLVLA		;All inputs TTL, not ST
+	clrf	INLVLA
+	clrf	INLVLC
+
+	banksel	RA0PPS		;Set up PPS outputs
+	movlw	B'10100';TX
+	movwf	TX_PPS
+
+	banksel	CKPPS		;Set up PPS inputs
+	movlw	FMX_PPSI
+	movwf	CLCIN0PPS
+	movlw	RX_PPSI
+	movwf	RXPPS
+	movlw	TX_PPSI
+	movwf	CKPPS
+
+	banksel	OSCSTAT		;Spin until PLL is ready and instruction clock
+	btfss	OSCSTAT,PLLR	; gears up to 8 MHz
+	bra	$-1
+
+	banksel	RCSTA		;Enable receiver now that PLL is ready
+	bsf	RCSTA,CREN
+
+	banksel	TRISA		;Tx and line to multiplexer outputs, all others
+	bcf	TMX_PORT,TMX_PIN; inputs
+	bcf	TX_PORT,TX_PIN
+
+	movlp	0		;TODO actual bootloader
+	goto	2
 
 
 ;;; End of Program ;;;

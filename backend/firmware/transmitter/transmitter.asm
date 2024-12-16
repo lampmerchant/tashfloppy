@@ -63,15 +63,6 @@ HIGHDEN	equ	7	;Set if inserted disk is high-density
 LASTLSB	equ	6	;Set if last MFM byte had LSb set
 MFMLIT	equ	5	;Set if MFM byte is to be interpreted literally
 
-;GCR tachometer parameters:
-TACHFCV	equ	156	;Feathering period, in units of 4.096 ms
-RPMDEV	equ	1	;Feathering deviation, in units of 0.4%
-Z0RPM	equ	394	;RPM in speed zone 0 (tracks 0-15)
-Z1RPM	equ	429	;RPM in speed zone 1 (tracks 16-31)
-Z2RPM	equ	472	;RPM in speed zone 2 (tracks 32-47)
-Z3RPM	equ	525	;RPM in speed zone 3 (tracks 48-63)
-Z4RPM	equ	590	;RPM in speed zone 4 (tracks 64-79)
-
 
 ;;; Variable Storage ;;;
 
@@ -79,11 +70,11 @@ Z4RPM	equ	590	;RPM in speed zone 4 (tracks 64-79)
 	
 	FLAGS	;You've got to have flags
 	TRACK	;Current track where head is placed
-	TACHFSH	;Tachometer feather swap value; swapped with CCP register value
-	TACHFSL	; at intervals
-	TACHFCH	;Tachometer feather count-up timer; when over limit, it swaps
-	TACHFCL	; the CCP register with TACHFSH:L
-	INDXCNT	;Countdown of 5 ms periods to index pulse
+	X13
+	X12
+	X11
+	X10
+	X9
 	X8
 	X7
 	X6
@@ -118,9 +109,6 @@ Interrupt
 	movlb	7		;If !WRREQ changed state, handle it
 	btfsc	NWQ_IOCF,NWQ_PIN; "
 	call	IntNwrreq	; "
-	movlb	0		;If Timer2 has interrupted, handle it
-	btfsc	PIR1,TMR2IF	; "
-	call	IntIndex	; "
 	retfie			;Done
 
 IntNwrreq
@@ -150,12 +138,9 @@ IntNwrreqRising
 
 IntNwrreqFalling
 	movlb	30		;Set output of CLC1 when CA0 is low to be
-	movlw	B'01100';CCP1	; determined by CCP1
-	movwf	CLC2SEL0	; "
+	clrf	CLC2SEL0;CLCIN0	; determined by CLCIN0 (FMX)
 	movlw	B'00000010'	; "
 	movwf	CLC2GLS0	; "
-	movlw	4		;Set the index pulse countdown to 20 ms, that's
-	movwf	INDXCNT		; soon but well beyond a single sector's write
 	movlb	0		;Reset and start Timer2
 	bcf	PIR1,TMR2IF	; "
 	clrf	TMR2		; "
@@ -223,26 +208,6 @@ IntCa3Eject
 	bcf	CLC1GLS2,7	;Set !WRPROT low
 	return			;Done
 
-IntIndex
-	bcf	PIR1,TMR2IF	;Clear the interrupt
-	decfsz	INDXCNT,F	;Decrement the index countdown and proceed only
-	return			; when it hits zero
-	movlb	0		;Reset Timer1
-	clrf	T1CON		; "
-	clrf	TMR1H		; "
-	clrf	TMR1L		; "
-	bsf	T1CON,TMR1ON	; "
-	movlb	5		;Set CCP1 to go high now and go low when 2.048
-	movlw	B'00001001'	; ms elapse, as SetupForMfm prepared
-	clrf	CCP1CON		; "
-	movwf	CCP1CON		; "
-	movlb	30		;Set the index pulse countdown to measure 200 ms
-	movlw	40		; (300 RPM) for a high density disk and 100 ms
-	btfss	FLAGS,HIGHDEN	; (600 RPM) for a double density disk
-	movlw	20		; "
-	movwf	INDXCNT		; "
-	return			;Done
-
 
 ;;; Hardware Initialization ;;;
 
@@ -297,7 +262,7 @@ Init
 	movwf	CLC2GLS1	;CLC2 in INDEX mode (when !WRREQ is low and
 	clrf	CLC2GLS2	; MFMMODE is high):
 	movlw	B'00100000'	;If CLCIN2 (CA0) is low, output is CLCIN0 (CCP1
-	movwf	CLC2GLS3	; from tachometer) TODO is it??
+	movwf	CLC2GLS3	; from multiplexer)
 	clrf	CLC2POL		;If CLCIN2 (CA0) is high, output is as above
 	movlw	B'10000000'
 	movwf	CLC2CON
@@ -343,12 +308,6 @@ Init
 	movlw	127
 	movwf	PR4
 
-	banksel	T2CON		;Timer2 ticks 1:16 with instruction clock when
-	movlw	B'01001010'	; running but not started yet, period and post-
-	movwf	T2CON		; scaler set so it interrupts once every 40,000
-	movlw	250		; cycles (5 ms)
-	movwf	PR2
-
 	banksel	IOCAP		;CA3 interrupts on rising edge, !WRREQ on either
 	bsf	CA3_IOCP,CA3_PIN
 	bsf	NWQ_IOCP,NWQ_PIN
@@ -364,11 +323,11 @@ Init
 
 	banksel	RA0PPS		;Set up PPS outputs
 	movlw	B'00110';LC3OUT
-	movwf	CTM_PPS
-	movlw	B'01100';CCP1
-	movwf	TTM_PPS
+	movwf	TMX_PPS
 
 	banksel	CKPPS		;Set up PPS inputs
+	movlw	FMX_PPSI
+	movwf	CLCIN0PPS
 	movlw	CA2_PPSI
 	movwf	CLCIN1PPS
 	movlw	CA0_PPSI
@@ -377,20 +336,13 @@ Init
 	movwf	CLCIN3PPS
 	movlw	RX_PPSI
 	movwf	RXPPS
-	movlw	TTM_PPSI
-	movwf	CCP1PPS
 
 	banksel	LATA		;CTS high (unasserted) so host waits to send
 	bsf	CTS_PORT,CTS_PIN
 
-	banksel	TRISA		;LC3OUT, CTS, CCP1 outputs, all others inputs
-	bcf	CTM_PORT,CTM_PIN
+	banksel	TRISA		;LC3OUT and CTS outputs, all others inputs
+	bcf	TMX_PORT,TMX_PIN
 	bcf	CTS_PORT,CTS_PIN
-	bcf	TTM_PORT,TTM_PIN
-
-	banksel	PIE1		;Timer2 interrupt enabled
-	movlw	1 << TMR2IE
-	movwf	PIE1
 
 	movlw	0x20		;Point queue pop (FSR0) and push (FSR1) pointers
 	movwf	FSR0H		; to first 256 bytes of linear memory
@@ -412,8 +364,8 @@ Init
 	banksel	LATA		;CTS low (asserted) so host sends data
 	bcf	CTS_PORT,CTS_PIN
 
-	movlw	B'11001000'	;Interrupt subsystem, peripheral interrupts (for
-	movwf	INTCON		; Timer2) and interrupt-on-change interrupts on
+	movlw	B'10001000'	;Interrupt subsystem and interrupt-on-change
+	movwf	INTCON		; interrupts on
 
 	;fall through
 
@@ -582,7 +534,9 @@ DataModeAutoGcr
 	call	SetupForGcr	;Setup for GCR
 	movlw	0xFD		;Set state to default
 	movwf	X0		; "
-DMAGcr0	call	FeatherOrUart	;003-029 Feather tachometer or service the UART
+DMAGcr0	call	ServiceUart	;003-015 Service the UART
+	nop			;016
+	call	ServiceUart	;017-029 Service the UART
 	DNOP			;030-031
 	nop			;032
 DMAGcr1	call	GetQueueLength	;033-047 Set/clear CTS and check if queue empty
@@ -642,7 +596,9 @@ DMAGcr2	movf	X0,W		;052 If state is -3, skip ahead to look for 0xD5
 	bcf	SSPCON1,SSPEN	;126  transmission in progress
 	bsf	SSPCON1,SSPEN	;127  "
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	call	GetQueueLength	;028-042 Set/clear CTS
 	call	ServiceUart	;043-055 Service the UART
 	DNOP			;056-057
@@ -662,7 +618,9 @@ DMAGcr2	movf	X0,W		;052 If state is -3, skip ahead to look for 0xD5
 	bcf	SSPCON1,SSPEN	;126  SSP buffer after resetting the SSP to
 	bsf	SSPCON1,SSPEN	;127  abort any transmission in progress
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	call	GetQueueLength	;028-042 Set/clear CTS
 	call	ServiceUart	;043-055 Service the UART
 	DNOP			;056-057
@@ -682,7 +640,9 @@ DMAGcr2	movf	X0,W		;052 If state is -3, skip ahead to look for 0xD5
 	bcf	SSPCON1,SSPEN	;126  the SSP buffer after resetting the SSP to
 	bsf	SSPCON1,SSPEN	;127  abort any transmission in progress
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	decf	X0,F		;028 Decrement the trio count
 	incf	X0,W		;029 If it was zero before being decremented, it
 	btfsc	STATUS,Z	;030  was a duo and we should return above
@@ -757,7 +717,9 @@ DMAGcr7	call	ServiceUart	;071-083 Service the UART
 	bcf	SSPCON1,SSPEN	;126  transmission in progress
 	bsf	SSPCON1,SSPEN	;127  "
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	call	GetQueueLength	;028-042 Set/clear CTS
 	call	ServiceUart	;043-055 Service the UART
 	nop			;056
@@ -773,7 +735,9 @@ DMAGcr7	call	ServiceUart	;071-083 Service the UART
 	bcf	SSPCON1,SSPEN	;126  transmission in progress
 	bsf	SSPCON1,SSPEN	;127  "
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	call	GetQueueLength	;028-042 Set/clear CTS
 	call	ServiceUart	;043-055 Service the UART
 	nop			;056
@@ -789,7 +753,9 @@ DMAGcr7	call	ServiceUart	;071-083 Service the UART
 	bcf	SSPCON1,SSPEN	;126  the SSP to abort any transmission in
 	bsf	SSPCON1,SSPEN	;127  progress
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	call	GetQueueLength	;028-042 Set/clear CTS
 	movf	INDF0,W		;043 If this is an address mark, set the state
 	xorlw	0x96		;044  so the next four bytes are treated as GCR
@@ -830,11 +796,13 @@ DMAGcr8	call	ServiceUart	;060-072 Service the UART
 	bcf	SSPCON1,SSPEN	;126  resetting the SSP to abort any
 	bsf	SSPCON1,SSPEN	;127  transmission in progress
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	nop			;028
 	decf	X1,F		;029 If that was the fifth address mark byte,
 	btfsc	STATUS,Z	;030  rejoin the loop up top
-	bra	DMAGcr1		;031(-032)  "
+	goto	DMAGcr1		;031(-032)  "
 	call	GetQueueLength	;032-046 Set/clear CTS
 	DELAY	3		;047-055
 	movlw	0xFD		;056 Make sure mode is set back to normal for
@@ -915,7 +883,9 @@ DMRGcr0	call	GetQueueLength	;034-048 Set/clear CTS and check if queue empty
 	bcf	SSPCON1,SSPEN	;126  after resetting the SSP to abort any
 	bsf	SSPCON1,SSPEN	;127  transmission in progress
 	movwf	SSP1BUF		;000  "
-	call	FeatherOrUart	;001-027 Feather tachometer or service the UART
+	call	ServiceUart	;001-013 Service the UART
+	nop			;014
+	call	ServiceUart	;015-027 Service the UART
 	movlb	1		;028 XOR pseudorandom result from the ADC with
 	movf	ADRESL,W	;029  Timer6 for next time
 	movlb	8		;030  "
@@ -992,15 +962,7 @@ DMAMf05	DNOP			;42-43
 	DNOP			;46-47
 	bsf	FLAGS,MFMLIT	;48 Flag that byte is to be taken literally
 	bra	DMAMf01		;49-50 Rejoin loop
-DMAMf06	movlb	0		;46 Reset Timer1
-	clrf	T1CON		;47  "
-	clrf	TMR1H		;48  "
-	clrf	TMR1L		;49  "
-	bsf	T1CON,TMR1ON	;50  "
-	movlb	5		;51 Set CCP1 to go high now and go low when
-	movlw	B'00001001'	;52  2.048 ms elapse, as SetupForMfm prepared
-	clrf	CCP1CON		;53  "
-	movwf	CCP1CON		;54  "
+DMAMf06	DELAY	3		;46-54
 	movlw	0x92		;55 Set up 0x4's MFM byte to go out
 	bra	DMAMf02		;56-57 Rejoin loop
 DMAMf07	movlw	0x02		;49 Set literal countdown to 514 so data block
@@ -1087,102 +1049,15 @@ GQLeng0	btfsc	WREG,7		;09 If the result is >= 192, make sure that CTS
 	bsf	CTS_PORT,CTS_PIN;12  "
 GQLeng1	return			;13-14 Done
 
-FeatherOrUart
-	incf	TACHFCL,F	;02 Increment the tachometer feather count-up
-	btfsc	STATUS,Z	;03  timer
-	incf	TACHFCH,F	;04  "
-	movlb	0		;05 If the tachometer signal has not recently
-	btfss	PIR1,CCP1IF	;06  inverted, service UART instead
-	bra	CTFeat0		;07(-08)  "
-	bcf	PIR1,CCP1IF	;08 Clear the interrupt
-	movlw	TACHFCV		;09 If the tachometer feather count-up timer is
-	subwf	TACHFCH,W	;10  not yet at its limit, skip ahead to service
-	btfss	STATUS,C	;11  the UART a second time
-	bra	CTFeat1		;12(-13)  "
-	movwf	TACHFCH		;13 Set feather count-up timer for next time
-	movf	TACHFSH,W	;14 Swap TACHFSH:L with CCPR2H:L to feather the
-	movlb	5		;15  tachometer signal
-	xorwf	CCPR2H,F	;16  "
-	xorwf	CCPR2H,W	;17  "
-	xorwf	CCPR2H,F	;18  "
-	movwf	TACHFSH		;19  "
-	movf	TACHFSL,W	;20  "
-	xorwf	CCPR2L,F	;21  "
-	xorwf	CCPR2L,W	;22  "
-	xorwf	CCPR2L,F	;23  "
-	movwf	TACHFSL		;24  "
-	return			;25-26 Done
-CTFeat0	DNOP			;09-10
-	DNOP			;11-12
-	nop			;13
-CTFeat1	bra	ServiceUart	;14(-26)
-
 SetupForGcr
 	clrf	FSR1L		;Empty queue
 	clrf	FSR0L		; "
 	movlb	4		;Configure SSP to operate at 500 kHz
 	movlw	15		; "
 	movwf	SSP1ADD		; "
-	movlb	0		;Stop and clear Timer1 so we don't have any
-	clrf	T1CON		; unexpected inverts or resets
-	clrf	TMR1H		; "
-	clrf	TMR1L		; "
-	movlb	5		;Set CCP1 to invert its output whenever Timer1
-	clrf	CCPR1H		; equals 0x0001 (right after it resets)
-	movlw	1		; TODO can it be zero??
-	movwf	CCPR1L		; "
-	clrf	CCP1CON		; "
-	movlw	B'00000010'	; "
-	movwf	CCP1CON		; "
-	swapf	TRACK,W		;Set CCP2 to reset Timer1 at a point appropriate
-	andlw	B'00000111'	; to the drive rotation speed we want to imitate
-	call	StFGcr0		; based on the current track number (see LUTs
-	movwf	CCPR2H		; below and associated constants above)
-	swapf	TRACK,W		; "
-	andlw	B'00000111'	; "
-	call	StFGcr1		; "
-	movwf	CCPR2L		; "
-	clrf	CCP2CON		; "
-	movlw	B'00001011'	; "
-	movwf	CCP2CON		; "
-	swapf	TRACK,W		;Set the swap value for CCP2 in a similar manner
-	andlw	B'00000111'	; to the above
-	call	StFGcr2		; "
-	movwf	TACHFSH		; "
-	swapf	TRACK,W		; "
-	andlw	B'00000111'	; "
-	call	StFGcr3		; "
-	movwf	TACHFSL		; "
-	movlb	0		;Start Timer1 again
-	bsf	T1CON,TMR1ON	; "
 	movlb	30		;Set !STEP high because step is ending
 	bsf	CLC1GLS2,6	; "
 	return			;Done
-StFGcr0	brw
-	retlw	high (2000000000 / (Z0RPM * (500 + RPMDEV)))
-	retlw	high (2000000000 / (Z1RPM * (500 + RPMDEV)))
-	retlw	high (2000000000 / (Z2RPM * (500 + RPMDEV)))
-	retlw	high (2000000000 / (Z3RPM * (500 + RPMDEV)))
-	retlw	high (2000000000 / (Z4RPM * (500 + RPMDEV)))
-StFGcr1	brw
-	retlw	low (2000000000 / (Z0RPM * (500 + RPMDEV)))
-	retlw	low (2000000000 / (Z1RPM * (500 + RPMDEV)))
-	retlw	low (2000000000 / (Z2RPM * (500 + RPMDEV)))
-	retlw	low (2000000000 / (Z3RPM * (500 + RPMDEV)))
-	retlw	low (2000000000 / (Z4RPM * (500 + RPMDEV)))
-StFGcr2	brw
-	retlw	high (2000000000 / (Z0RPM * (500 - RPMDEV)))
-	retlw	high (2000000000 / (Z1RPM * (500 - RPMDEV)))
-	retlw	high (2000000000 / (Z2RPM * (500 - RPMDEV)))
-	retlw	high (2000000000 / (Z3RPM * (500 - RPMDEV)))
-	retlw	high (2000000000 / (Z4RPM * (500 - RPMDEV)))
-StFGcr3	brw
-	retlw	low (2000000000 / (Z0RPM * (500 - RPMDEV)))
-	retlw	low (2000000000 / (Z1RPM * (500 - RPMDEV)))
-	retlw	low (2000000000 / (Z2RPM * (500 - RPMDEV)))
-	retlw	low (2000000000 / (Z3RPM * (500 - RPMDEV)))
-	retlw	low (2000000000 / (Z4RPM * (500 - RPMDEV)))
-	dt	0xFF, 0xFF, 0xFF
 
 SetupForMfm
 	clrf	FSR1L		;Empty queue
@@ -1190,17 +1065,6 @@ SetupForMfm
 	movlb	4		;Configure SSP to operate at 1 MHz
 	movlw	7		; "
 	movwf	SSP1ADD		; "
-	movlb	0		;Stop and clear Timer1 so we don't have any
-	clrf	T1CON		; unexpected inverts or resets
-	clrf	TMR1H		; "
-	clrf	TMR1L		; "
-	movlb	5		;Turn off CCP2 so nothing resets Timer1, set up
-	clrf	CCP2CON		; CCP1 so output is low for now but its register
-	movlw	0x40		; in compare mode will trigger after 2.048 ms,
-	movwf	CCPR1H		; this allows an index pulse to be set up using
-	clrf	CCPR1L		; it
-	clrf	CCP1CON		; "
-	bsf	CCP1CON,3	; "
 	movlb	30		;Set !STEP high because step is ending
 	bsf	CLC1GLS2,6	; "
 	return			;Done
