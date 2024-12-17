@@ -71,30 +71,43 @@ LUT muxes !MOTORON and !TK0  | |---|0|
 
 ### Multiplexer
 
-TODO
+```
+When !HSHK is high (idle):
+        ___
+SDO ---|   \     |\
+SCK ---|    )O---|0|
+CA1 ---|___/     | |___ RD
+                 | |
+         !CA1 ---|1|
+                 |/
+                  |
+                 CA2
+
+When !HSHK is low (ready):
+        ___
+SDO ---|   \    |\
+SCK ---|    )---|0|
+CA1 ---|___/    | |___ RD
+                | |
+        !CA1 ---|1|
+                |/
+                 |
+                CA2
+\_______CLC2_______/
+
+```
 
 
 ### Transmitter
 
-TODO
+* `FMX (TTX from Mx) --- CTS`
+* `!WRREQ --- TMX`
 
 
 ### Receiver
 
-TODO, possibly:
-
-```
-          ___    |\
-  CA0 ---|LUT|---|0|
-         |___|   | |___ TMX
-                 | |
-LUT muxes   1 ---|1|
-!HSHK in         |/
-S2 and S3         |
-                 CA2
-\_______CLC3________/
-
-```
+* `FMX (TRX from Mx) --- Tx`
+* `!WR --- TMX`
 
 
 ## Bootloader
